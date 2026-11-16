@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "kind": "sign_in_required",
+    "message": "Claude Code is not authenticated; run claude and sign in"
+  }
+}

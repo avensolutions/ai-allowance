@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "data": {
+    "subscription_type": "max",
+    "rate_limits_available": true,
+    "rate_limits": {
+      "five_hour": {
+        "utilization": 12,
+        "resets_at": "2026-11-16T05:00:00+00:00"
+      },
+      "seven_day": {
+        "utilization": 63,
+        "resets_at": "2026-11-16T07:59:59.776362+00:00",
+        "limit_dollars": null,
+        "used_dollars": null
+      },
+      "seven_day_oauth_apps": null,
+      "seven_day_opus": null,
+      "model_scoped": [
+        {
+          "display_name": "Fable",
+          "utilization": 100,
+          "resets_at": "2026-11-16T07:59:59.776469+00:00"
+        }
+      ],
+      "some_future_field": {"nested": true}
+    }
+  }
+}

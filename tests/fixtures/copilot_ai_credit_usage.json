@@ -1,0 +1,48 @@
+{
+  "timePeriod": {
+    "year": 2026,
+    "month": 11
+  },
+  "user": "someone",
+  "usageItems": [
+    {
+      "product": "copilot",
+      "sku": "copilot_premium_request",
+      "model": "default",
+      "unitType": "credits",
+      "pricePerUnit": 0.04,
+      "grossQuantity": 132.5,
+      "grossAmount": 5.3,
+      "discountQuantity": 120.5,
+      "discountAmount": 4.82,
+      "netQuantity": 12.0,
+      "netAmount": 0.48
+    },
+    {
+      "product": "Copilot",
+      "sku": "copilot_code_review",
+      "model": "default",
+      "unitType": "credits",
+      "pricePerUnit": 0.04,
+      "grossQuantity": 29.5,
+      "grossAmount": 1.18,
+      "discountQuantity": 29.5,
+      "discountAmount": 1.18,
+      "netQuantity": 0.0,
+      "netAmount": 0.0
+    },
+    {
+      "product": "spark",
+      "sku": "spark_message",
+      "model": "default",
+      "unitType": "credits",
+      "pricePerUnit": 0.04,
+      "grossQuantity": 999.0,
+      "grossAmount": 39.96,
+      "discountQuantity": 999.0,
+      "discountAmount": 39.96,
+      "netQuantity": 0.0,
+      "netAmount": 0.0
+    }
+  ]
+}
