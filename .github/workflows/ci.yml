@@ -14,7 +14,7 @@ jobs:
     name: Rust version bump
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -37,7 +37,7 @@ jobs:
     name: Build and test (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -76,7 +76,7 @@ jobs:
         run: .\installer\test.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ai-allowance-windows-x64-installer
           path: target/installer/ai-allowance-windows-x64-setup.exe
