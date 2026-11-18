@@ -1,0 +1,18 @@
+{
+  "plan": "individual_max",
+  "reset": "2026-12-01",
+  "quota": {
+    "chat": {"has_quota": true, "unlimited": true, "percent_remaining": 100},
+    "completions": {"has_quota": true, "unlimited": true, "percent_remaining": 100},
+    "premium_interactions": {
+      "has_quota": true,
+      "unlimited": false,
+      "credits_used": 7201,
+      "entitlement": 20000,
+      "percent_remaining": 63.9,
+      "overage_count": 0,
+      "quota_reset_at": 0,
+      "timestamp_utc": "2026-11-18T05:00:00Z"
+    }
+  }
+}

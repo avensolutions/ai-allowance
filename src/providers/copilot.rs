@@ -1,272 +1,263 @@
-//! GitHub Copilot adapter.
-//!
-//! Uses the documented personal-account billing REST API:
-//! `GET /users/{username}/settings/billing/ai_credit/usage`
-//! with a user-supplied fine-grained PAT (Plan read permission) stored in
-//! Windows Credential Manager. The usage report does not expose the total
-//! monthly allowance; a percentage is only shown when the user configures
-//! `monthly_included_credits`, and it is marked as configured. Included
-//! consumption (discounted quantity) is tracked separately from billed
-//! overage (net quantity). Included credits reset on the first day of each
-//! calendar month at 00:00 UTC per GitHub's documentation; billing data can
-//! lag, so collection time is not a provider data timestamp.
+//! Experimental Copilot quota snapshots, collected read-only through GitHub CLI.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 
 use crate::config::CopilotConfig;
+use crate::providers::hide_console;
 use crate::state::{FetchError, FetchOutcome, QuotaWindow};
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-const API_VERSION: &str = "2022-11-28";
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_OUTPUT: u64 = 256 * 1024;
+const QUERY: &str = "{plan: .copilot_plan, reset: .quota_reset_date, quota: .quota_snapshots}";
 
 #[derive(Deserialize)]
-struct UsageReport {
-    #[serde(default, rename = "usageItems")]
-    usage_items: Vec<UsageItem>,
+struct Report {
+    plan: Option<String>,
+    reset: Option<String>,
+    quota: Option<BTreeMap<String, Snapshot>>,
 }
 
 #[derive(Deserialize)]
-struct UsageItem {
-    #[serde(default)]
-    product: Option<String>,
-    #[serde(default, rename = "discountQuantity")]
-    discount_quantity: Option<f64>,
-    #[serde(default, rename = "netQuantity")]
-    net_quantity: Option<f64>,
+struct Snapshot {
+    has_quota: Option<bool>,
+    unlimited: Option<bool>,
+    percent_remaining: Option<f64>,
+    credits_used: Option<f64>,
+    entitlement: Option<f64>,
+    overage_count: Option<f64>,
+    quota_reset_at: Option<i64>,
+    timestamp_utc: Option<DateTime<Utc>>,
 }
 
-/// First day of the next calendar month at 00:00 UTC.
-pub fn next_month_start(now: DateTime<Utc>) -> DateTime<Utc> {
-    let (y, m) = (now.year(), now.month());
-    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0).unwrap()
-}
-
-/// Parse the monthly usage report into one credits window.
-pub fn parse_usage_report(
-    json: &str,
-    cfg: &CopilotConfig,
-    now: DateTime<Utc>,
-) -> Result<FetchOutcome, FetchError> {
-    let report: UsageReport = serde_json::from_str(json)
-        .map_err(|e| FetchError::Other(format!("unexpected usage report shape: {e}")))?;
-
-    let filters: Vec<String> = cfg
-        .products
-        .iter()
-        .map(|p| p.to_ascii_lowercase())
-        .collect();
-    let mut discounted = 0.0f64;
-    let mut net = 0.0f64;
-    let mut matched = false;
-    for item in &report.usage_items {
-        let product = item
-            .product
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !filters.is_empty() && !filters.iter().any(|f| product.contains(f.as_str())) {
+pub fn parse_quota(json: &str, account_key: String) -> Result<FetchOutcome, FetchError> {
+    let report: Report = serde_json::from_str(json)
+        .map_err(|_| FetchError::Other("Unexpected Copilot quota response.".into()))?;
+    if report.plan.as_deref().is_none_or(|p| p.is_empty()) {
+        return Err(FetchError::Unsupported(
+            "No Copilot plan was returned.".into(),
+        ));
+    }
+    let quota = report
+        .quota
+        .ok_or_else(|| FetchError::Other("Copilot quota snapshots are missing.".into()))?;
+    let monthly_reset = report
+        .reset
+        .as_deref()
+        .map(|reset| {
+            NaiveDate::parse_from_str(reset, "%Y-%m-%d")
+                .ok()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|d| d.and_utc())
+                .ok_or_else(|| FetchError::Other("Copilot returned an invalid reset date.".into()))
+        })
+        .transpose()?;
+    let mut windows = Vec::new();
+    for (id, quota) in quota {
+        if quota.unlimited == Some(true) || quota.has_quota == Some(false) {
             continue;
         }
-        matched = true;
-        discounted += item.discount_quantity.unwrap_or(0.0);
-        net += item.net_quantity.unwrap_or(0.0);
-    }
-
-    let mut w = QuotaWindow::new("copilot:credits", "Copilot");
-    if matched {
-        // Included-credit consumption is the discounted quantity; a billed
-        // amount of zero does not mean no included allowance was consumed.
-        w.used_units = Some(discounted);
-        w.overage_units = Some(net);
-    } else {
-        // An empty month means zero consumption so far, which is a real
-        // observation, not missing data.
-        w.used_units = Some(0.0);
-        w.overage_units = Some(0.0);
-    }
-    if let Some(total) = cfg.monthly_included_credits {
-        if total > 0.0 {
-            w.allowance_units = Some(total);
-            w.allowance_is_configured = true;
+        let mut w = QuotaWindow::new(
+            format!("copilot:{id}"),
+            match id.as_str() {
+                "premium_interactions" => "Copilot".to_string(),
+                "chat" => "Copilot Chat".to_string(),
+                "completions" => "Copilot completions".to_string(),
+                _ => format!("Copilot {}", id.replace('_', " ")),
+            },
+        );
+        if let Some(left) = quota.percent_remaining {
+            if !left.is_finite() || !(0.0..=100.0).contains(&left) {
+                return Err(FetchError::Other(
+                    "Copilot returned an invalid remaining percentage.".into(),
+                ));
+            }
+            w.used_percent = Some(100.0 - left);
         }
+        let quantity = |value: Option<f64>| -> Result<Option<f64>, FetchError> {
+            if value.is_some_and(|n| !n.is_finite() || n < 0.0) {
+                Err(FetchError::Other(
+                    "Copilot returned an invalid quota quantity.".into(),
+                ))
+            } else {
+                Ok(value)
+            }
+        };
+        w.used_units = quantity(quota.credits_used)?;
+        w.allowance_units = quantity(quota.entitlement)?.filter(|n| *n > 0.0);
+        w.overage_units = quantity(quota.overage_count)?;
+        w.provider_data_at = quota.timestamp_utc;
+        w.resets_at = match quota.quota_reset_at.filter(|n| *n != 0) {
+            Some(timestamp) => Some(
+                DateTime::from_timestamp(timestamp, 0)
+                    .filter(|_| timestamp > 0)
+                    .ok_or_else(|| {
+                        FetchError::Other("Copilot returned an invalid reset timestamp.".into())
+                    })?,
+            ),
+            None => monthly_reset,
+        };
+        // Copilot allowances are monthly: the window runs from the same day
+        // of the previous month to the reset.
+        w.window_secs = w.resets_at.and_then(|reset| {
+            reset
+                .checked_sub_months(chrono::Months::new(1))
+                .map(|start| (reset - start).num_seconds())
+        });
+        if w.used_percent.is_none() && w.used_units.is_none() {
+            return Err(FetchError::Other(
+                "Copilot returned a quota without usage values.".into(),
+            ));
+        }
+        windows.push(w);
     }
-    w.resets_at = Some(next_month_start(now));
+    windows.sort_by_key(|w| (w.id != "copilot:premium_interactions", w.id.clone()));
+    if windows.is_empty() {
+        return Err(FetchError::Unsupported(
+            "No finite Copilot allowance was reported.".into(),
+        ));
+    }
     Ok(FetchOutcome {
-        account_key: cfg.username.clone(),
-        windows: vec![w],
+        account_key: Some(account_key),
+        windows,
     })
 }
 
-#[cfg(windows)]
-pub fn stored_token() -> Result<Option<String>, String> {
-    use crate::config::{KEYRING_COPILOT_USER, KEYRING_SERVICE};
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_COPILOT_USER)
-        .map_err(|e| format!("credential manager unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(token) => Ok(Some(token)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("could not read stored token: {e}")),
-    }
-}
-
-#[cfg(windows)]
-pub fn store_token(token: &str) -> Result<(), String> {
-    use crate::config::{KEYRING_COPILOT_USER, KEYRING_SERVICE};
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_COPILOT_USER)
-        .map_err(|e| format!("credential manager unavailable: {e}"))?;
-    entry
-        .set_password(token)
-        .map_err(|e| format!("could not store token: {e}"))
-}
-
-#[cfg(windows)]
-pub async fn fetch(cfg: &CopilotConfig) -> Result<FetchOutcome, FetchError> {
-    let Some(username) = cfg.username.as_deref().filter(|u| !u.is_empty()) else {
-        return Err(FetchError::NotConfigured(
-            "set providers.copilot.username in config.toml".to_string(),
-        ));
-    };
-    let token = match stored_token() {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return Err(FetchError::SignInRequired(
-                "store a fine-grained PAT with Plan read permission via \
-                 aiallowance --set-copilot-token"
-                    .to_string(),
-            ))
-        }
-        Err(e) => return Err(FetchError::Other(e)),
-    };
-    let now = Utc::now();
-    let url = format!(
-        "https://api.github.com/users/{username}/settings/billing/ai_credit/usage?year={}&month={}",
-        now.year(),
-        now.month()
+async fn gh(cfg: &CopilotConfig, endpoint: &str, query: &str) -> Result<String, FetchError> {
+    use tokio::io::AsyncReadExt;
+    let mut cmd = tokio::process::Command::new(
+        cfg.command
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("gh")),
     );
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .user_agent(concat!("AIAllowance/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| FetchError::Other(format!("http client: {e}")))?;
-    let resp = client
-        .get(&url)
-        .bearer_auth(&token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", API_VERSION)
-        .send()
+    cmd.args(["api", endpoint, "--hostname", "github.com", "--jq", query])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    hide_console(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            FetchError::Unsupported(
+                "GitHub CLI was not found. Install gh or set its executable in Settings.".into(),
+            )
+        } else {
+            FetchError::Other("Could not start GitHub CLI.".into())
+        }
+    })?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .take(MAX_OUTPUT + 1)
+        .read_to_end(&mut output)
         .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                FetchError::Timeout("GitHub billing request timed out".to_string())
-            } else {
-                FetchError::Other(format!("GitHub billing request failed: {e}"))
-            }
-        })?;
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(FetchError::SignInRequired(format!(
-            "GitHub rejected the token ({status}); it needs the Plan read permission"
-        )));
+        .map_err(|_| FetchError::Other("Could not read the GitHub CLI response.".into()))?;
+    if output.len() as u64 > MAX_OUTPUT {
+        return Err(FetchError::Other(
+            "GitHub CLI response exceeded the size limit.".into(),
+        ));
     }
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-        return Err(FetchError::RateLimited {
-            retry_after_secs: retry_after,
-            message: "GitHub API rate limited".to_string(),
-        });
-    }
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(FetchError::SignInRequired(format!(
-            "GitHub returned 404 for {username}'s billing usage; the token likely lacks the \
-             Plan read permission or the username is wrong"
-        )));
-    }
-    if !status.is_success() {
-        return Err(FetchError::Other(format!(
-            "GitHub billing request failed with {status}"
-        )));
-    }
-    let body = resp
-        .text()
+    let status = child
+        .wait()
         .await
-        .map_err(|e| FetchError::Other(format!("GitHub response read failed: {e}")))?;
-    parse_usage_report(&body, cfg, now)
+        .map_err(|_| FetchError::Other("Could not wait for GitHub CLI.".into()))?;
+    if !status.success() {
+        return Err(FetchError::SignInRequired(
+            "GitHub CLI could not read Copilot quotas. Check gh auth status and sign in with gh auth login.".into(),
+        ));
+    }
+    String::from_utf8(output)
+        .map_err(|_| FetchError::Other("GitHub CLI returned invalid text.".into()))
+}
+
+pub async fn fetch(cfg: &CopilotConfig) -> Result<FetchOutcome, FetchError> {
+    if !cfg.enabled {
+        return Err(FetchError::NotConfigured("disabled in Settings".into()));
+    }
+    tokio::time::timeout(FETCH_TIMEOUT, async {
+        let account = gh(cfg, "/user", ".id").await?;
+        let account = account.trim();
+        if account.is_empty() || !account.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(FetchError::Other(
+                "GitHub CLI did not identify the signed-in account.".into(),
+            ));
+        }
+        let json = gh(cfg, "/copilot_internal/user", QUERY).await?;
+        parse_quota(&json, format!("github:{account}"))
+    })
+    .await
+    .map_err(|_| FetchError::Timeout("GitHub CLI quota request timed out.".into()))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cfg(allowance: Option<f64>) -> CopilotConfig {
-        CopilotConfig {
-            enabled: true,
-            username: Some("someone".to_string()),
-            monthly_included_credits: allowance,
-            products: vec!["copilot".to_string()],
-        }
+    #[tokio::test]
+    async fn disabled_and_missing_cli_are_explicit_without_network_access() {
+        let mut cfg = CopilotConfig {
+            enabled: false,
+            command: Some(std::env::temp_dir().join("ai-allowance-nonexistent-gh.exe")),
+        };
+        assert!(matches!(
+            fetch(&cfg).await,
+            Err(FetchError::NotConfigured(_))
+        ));
+        cfg.enabled = true;
+        assert!(matches!(fetch(&cfg).await, Err(FetchError::Unsupported(_))));
     }
-
-    fn t(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
-    }
-
-    const FIXTURE: &str = include_str!("../../tests/fixtures/copilot_ai_credit_usage.json");
 
     #[test]
-    fn included_usage_comes_from_discounted_quantity() {
-        let now = t("2026-11-16T03:00:00Z");
-        let out = parse_usage_report(FIXTURE, &cfg(None), now).unwrap();
+    fn finite_premium_quota_uses_reported_percentage_and_utc_reset() {
+        let out = parse_quota(
+            include_str!("../../tests/fixtures/copilot_quota.json"),
+            "github:123".into(),
+        )
+        .unwrap();
+        assert_eq!(out.windows.len(), 1);
         let w = &out.windows[0];
-        // 120.5 + 29.5 discounted across the two copilot items; the
-        // non-copilot item is filtered out; billed overage kept separately.
-        assert_eq!(w.used_units, Some(150.0));
-        assert_eq!(w.overage_units, Some(12.0));
-        // No allowance configured: no invented percentage.
-        assert_eq!(w.remaining_percent(), None);
+        assert_eq!(w.id, "copilot:premium_interactions");
+        assert!((w.remaining_percent().unwrap() - 63.9).abs() < 0.001);
+        assert_eq!(w.allowance_units, Some(20000.0));
+        assert_eq!(
+            w.resets_at.unwrap().to_rfc3339(),
+            "2026-12-01T00:00:00+00:00"
+        );
+        assert!(w.provider_data_at.is_some());
         assert!(!w.allowance_is_configured);
     }
 
     #[test]
-    fn configured_allowance_yields_marked_percentage() {
-        let now = t("2026-11-16T03:00:00Z");
-        let out = parse_usage_report(FIXTURE, &cfg(Some(300.0)), now).unwrap();
-        let w = &out.windows[0];
-        assert!(w.allowance_is_configured);
-        assert_eq!(w.remaining_percent(), Some(50.0));
+    fn absent_and_invalid_snapshots_do_not_invent_full_allowances() {
+        for json in [
+            "{}",
+            r#"{"plan":"max","quota":{}}"#,
+            r#"{"plan":"max","quota":{"premium_interactions":{}}}"#,
+            r#"{"plan":"max","quota":{"premium_interactions":{"percent_remaining":150}}}"#,
+        ] {
+            assert!(parse_quota(json, "github:123".into()).is_err());
+        }
+        let out = parse_quota(
+            r#"{"plan":"max","quota":{"premium_interactions":{"credits_used":20}}}"#,
+            "github:123".into(),
+        )
+        .unwrap();
+        assert_eq!(out.windows[0].remaining_percent(), None);
     }
 
     #[test]
-    fn reset_is_first_of_next_month_utc() {
-        let now = t("2026-11-16T03:00:00Z");
-        let out = parse_usage_report(FIXTURE, &cfg(None), now).unwrap();
-        assert_eq!(out.windows[0].resets_at.unwrap(), t("2026-12-01T00:00:00Z"));
-        // December rolls into January of the next year.
-        assert_eq!(
-            next_month_start(t("2026-12-31T23:00:00Z")),
-            t("2027-01-01T00:00:00Z")
-        );
-    }
-
-    #[test]
-    fn empty_month_is_zero_usage_not_missing_data() {
-        let now = t("2026-11-16T03:00:00Z");
-        let out = parse_usage_report(r#"{"usageItems":[]}"#, &cfg(None), now).unwrap();
-        let w = &out.windows[0];
-        assert_eq!(w.used_units, Some(0.0));
-        assert_eq!(w.remaining_percent(), None);
-    }
-
-    #[test]
-    fn malformed_body_is_an_error_not_zero() {
-        let now = t("2026-11-16T03:00:00Z");
-        assert!(parse_usage_report("not json", &cfg(None), now).is_err());
+    fn separate_finite_windows_and_window_specific_reset_are_retained() {
+        let out = parse_quota(r#"{"plan":"max","reset":"2026-12-01","quota":{
+            "chat":{"has_quota":true,"unlimited":false,"percent_remaining":80,"quota_reset_at":1795000000},
+            "premium_interactions":{"percent_remaining":50}
+        }}"#, "github:123".into()).unwrap();
+        assert_eq!(out.windows.len(), 2);
+        assert_eq!(out.windows[0].id, "copilot:premium_interactions");
+        assert_eq!(out.windows[1].resets_at.unwrap().timestamp(), 1795000000);
     }
 }

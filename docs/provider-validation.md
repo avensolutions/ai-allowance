@@ -10,7 +10,7 @@ was redeemed. Validation date: 2026-11-16, on Windows 11 x64.
 | --- | --- | --- | --- |
 | Claude | Agent SDK experimental usage method via Node helper | Yes (2026-11-16) | Working, explicitly experimental |
 | Work/Codex | `codex app-server` JSON-RPC `account/rateLimits/read` | Yes (2026-11-16) | Working |
-| Copilot | `GET /users/{username}/settings/billing/ai_credit/usage` | No (blocked, see below) | Implemented against documented schema, unverified against live data |
+| Copilot | `gh api /copilot_internal/user` quota snapshots | Yes (2026-11-18) | Working, explicitly experimental |
 
 ## Claude (experimental)
 
@@ -94,42 +94,91 @@ was redeemed. Validation date: 2026-11-16, on Windows 11 x64.
 
 ## GitHub Copilot
 
-- Endpoint: `GET https://api.github.com/users/{username}/settings/billing/ai_credit/usage?year=Y&month=M`
-  with `Accept: application/vnd.github+json` and `X-GitHub-Api-Version:
-  2022-11-28`. The docs example also shows version `2026-03-10`; the adapter
-  sends the stable `2022-11-28`.
-- Authentication: fine-grained PAT with the account permission "Plan"
-  (read). AIAllowance stores it in Windows Credential Manager (service
-  `AIAllowance`, user `github-copilot-pat`) via `--set-copilot-token`.
-- Live validation is BLOCKED on this machine: the available `gh` CLI OAuth
-  token lacks the required permission (the API answered 404 and gh suggested
-  the classic `user` scope). No broader-scope token was created for the
-  probe. The adapter is implemented against the documented response schema
-  and synthetic fixtures only; field interpretation below needs confirmation
-  against a real account dashboard once a PAT is available.
-- Documented response schema (confirmed from the endpoint reference):
-  `timePeriod {year, month, day}`, `user`, and `usageItems[]` with `product`,
-  `sku`, `model`, `unitType`, `pricePerUnit`, `grossQuantity`, `grossAmount`,
-  `discountQuantity`, `discountAmount`, `netQuantity`, `netAmount`.
-- Interpretation implemented (to verify): `discountQuantity` is consumption
-  covered by the included allowance, `netQuantity` is billed overage. A net
-  amount of zero does not mean no included allowance was consumed. Items are
-  filtered to products containing `copilot` (configurable via
-  `providers.copilot.products`); the user-level endpoint is personal-account
-  only and no organization endpoint is used.
-- Allowance: the usage report does not return the plan's total included
-  credits, and no verified entitlement source was found. The user may set
-  `monthly_included_credits` in config; the UI marks the resulting
-  percentage as configured. Without it, the app shows credits used and the
-  reset time, and does not invent a percentage. Plan totals are never
-  hardcoded.
-- Reset semantics: included credits reset on the first day of each calendar
-  month at 00:00 UTC per GitHub's Copilot billing documentation (verified in
-  the docs on 2026-11-16, not against live data). The app computes the reset
-  timestamp in UTC and displays it in the local time zone.
-- Latency: billing data can lag; the endpoint exposes no data timestamp, so
-  only the local collection time is recorded and a successful poll is not
-  treated as proof of real-time accounting.
+- Validated on 2026-11-18 with GitHub CLI 2.97.0 and an existing sign-in.
+- Command:
+  `gh api /copilot_internal/user --jq '{plan: .copilot_plan, reset: .quota_reset_date, quota: .quota_snapshots}'`.
+  This internal endpoint is deliberately enabled at the maintainer's explicit
+  request. It is not a documented public API contract.
+- Authentication stays entirely with GitHub CLI. The app also calls
+  `gh api /user --jq .id` to identify the account for cache isolation.
+  Requests explicitly select github.com and do not require a repository
+  working directory.
+- Observed response: `plan`, a `YYYY-MM-DD` reset date, and snapshots keyed
+  by `chat`, `completions` and `premium_interactions`. Synthetic fixtures
+  retain this shape without storing account identifiers.
+- Snapshot fields retained: `percent_remaining` (0-100 percentage left),
+  `credits_used`, `entitlement`, `overage_count`, `timestamp_utc` and
+  `quota_reset_at`. The reported percentage takes precedence over a derived
+  credits ratio; the two can differ due to provider rounding.
+- Explicitly unlimited chat and completion snapshots are not shown as finite
+  allowances. All finite windows remain separate; premium interactions come
+  first in the default compact view.
+- Reset convention: use a positive per-window Unix timestamp when present.
+  A zero or absent timestamp falls back to the monthly date at 00:00 UTC.
+  This is experimental interpretation, not a verified reset-boundary guarantee.
+- The complete two-command lifecycle has a 30-second timeout, an output
+  size limit, hidden consoles, no shell and kill-on-drop supervision.
+  It does not submit a model prompt or modify the account.
+- The provider timestamp and local collection timestamp are separate. A
+  successful check does not imply real-time accounting.
+
+## Tray and settings validation (2026-11-18)
+
+- Copilot settings expose enablement and an optional GitHub CLI executable.
+  The earlier billing adapter and its configuration fields have been removed.
+- Missing snapshots, malformed quantities and missing usage produce explicit
+  failures instead of invented zero consumption or full allowance.
+- The default tooltip includes `claude:model:fable` below Claude's first
+  window when present. Explicit tooltip selections remain authoritative.
+- Native Windows control tests verify settings round trips, validation,
+  page changes, controls fitting the client area, the three usage sections,
+  exact allowance-left progress values, no bar for unknown denominators,
+  window centering and close behavior. Persistence tests verify replacement
+  of an existing configuration and preservation after invalid edits.
+- Settings are written next to the executable; an existing AppData
+  configuration is copied on first run. Provider changes cancel obsolete
+  requests and discard their queued results before refreshing new settings.
+- Usage links support separate Chrome profile directories. The GitHub link
+  is `https://github.com/settings/copilot/features`.
+- A release-executable smoke test exercised startup, single left click
+  without a menu, double left click opening Usage, right click opening the
+  context menu, all Settings pages, saving portable configuration and Quit.
+  Rendered usage bars were inspected with live Claude and Work/Codex values.
+- Multi-monitor DPI changes, light/dark taskbars, suspend/resume and Explorer
+  restart still require interactive validation.
+- The usage dialog now uses light grey rounded provider cards, original
+  provider logos, compact Segoe UI text and thin blue allowance-left bars.
+  Settings uses the same smaller base font and native themed controls.
+  Own-window captures verified all four live allowance rows. Repaint tests
+  cover repeated rebuilds, opaque label backgrounds and native client
+  rendering to prevent overlapping text and stale bars.
+- The legacy shell tooltip clipped after roughly 64 characters. A tracked
+  native tooltip now retains complete Work/Codex and Copilot rows; a native
+  control regression test checks text beyond that boundary.
+
+## Dialog refinements and pace lights (2026-11-18)
+
+- Claude desktop's bundled CSS uses the proprietary `anthropic-sans` face
+  with `system-ui, "Segoe UI"` fallbacks: body 14px, caption 12px, heading
+  15px, weight 600. The dialogs use Segoe UI at those sizes; the face is
+  not copied. Claude's bar colours (fill rgb(106,171,241), track
+  rgb(228,239,251)) were sampled from a screenshot.
+- Provider logos are loaded with `LoadImageW` at the exact drawn size from
+  multi-size ICOs; the previous 32px-only resources were stretched.
+- Settings edits are borderless and centred inside painted rounded boxes;
+  a native test checks edit and box centres agree within 1 pixel.
+- Path and profile fields use `IFileOpenDialog`. Chrome profiles must be a
+  direct child of a folder containing Chrome's `Local State` file, because
+  `--profile-directory` is relative to the user data folder.
+- The tooltip selector writes an empty `tooltip.windows` for Automatic and
+  rejects an empty manual selection; a native test covers both.
+- Hover rows show pace lights computed from the window length: Claude
+  weekly windows are 7 days and Claude 5h is 5 hours (fixed by the API
+  field names), Work/Codex uses `windowDurationMins`, and Copilot's window
+  is assumed to be the calendar month ending at its reset. The month
+  length is an inference, not a reported value. Unit tests cover the
+  thresholds for weekly and 30-day windows and unknown inputs; a native
+  test checks the painted circle colours.
 
 ## Error semantics shared by all adapters
 

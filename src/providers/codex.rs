@@ -100,6 +100,7 @@ fn push_window(
     let mut q = QuotaWindow::new(format!("codex:{bucket_key}:{which}"), label);
     q.used_percent = w.used_percent.filter(|u| u.is_finite());
     q.resets_at = w.resets_at.and_then(|s| DateTime::from_timestamp(s, 0));
+    q.window_secs = w.window_duration_mins.filter(|m| *m > 0).map(|m| m * 60);
     windows.push(q);
 }
 
@@ -233,7 +234,7 @@ async fn fetch_inner(exe: &PathBuf) -> Result<FetchOutcome, FetchError> {
                 "params": {
                     "clientInfo": {
                         "name": "aiallowance",
-                        "title": "AIAllowance",
+                        "title": "AI Allowance",
                         "version": env!("CARGO_PKG_VERSION"),
                     }
                 }

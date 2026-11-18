@@ -22,6 +22,12 @@ pub struct RefreshCoordinator {
 }
 
 impl RefreshCoordinator {
+    pub fn reset(&mut self, provider: ProviderKind) {
+        self.in_flight.remove(&provider);
+        self.backoff_until.remove(&provider);
+        self.consecutive_failures.remove(&provider);
+    }
+
     /// Begin a fetch when data is older than `max_age_secs`, the provider is
     /// not already in flight and no backoff applies. Returns true when the
     /// caller should spawn the fetch.
@@ -170,5 +176,16 @@ mod tests {
         assert!(!c.try_begin(ProviderKind::Claude, None, t0, 60));
         // Explicit "Refresh now" still works during backoff.
         assert!(c.force_begin(ProviderKind::Claude));
+    }
+
+    #[test]
+    fn reconfiguring_one_provider_preserves_other_in_flight_requests() {
+        let mut c = RefreshCoordinator::default();
+        assert!(c.force_begin(ProviderKind::Claude));
+        assert!(c.force_begin(ProviderKind::Copilot));
+        c.complete(ProviderKind::Copilot, false, Some(3600), now());
+        c.reset(ProviderKind::Copilot);
+        assert!(c.try_begin(ProviderKind::Copilot, None, now(), 60));
+        assert!(!c.force_begin(ProviderKind::Claude));
     }
 }

@@ -46,8 +46,8 @@ impl ProviderKind {
     pub fn usage_url(self) -> &'static str {
         match self {
             ProviderKind::Claude => "https://claude.ai/settings/usage",
-            ProviderKind::Codex => "https://chatgpt.com/codex/settings/usage",
-            ProviderKind::Copilot => "https://github.com/settings/billing",
+            ProviderKind::Codex => "https://chatgpt.com/settings/usage?tab=overview",
+            ProviderKind::Copilot => "https://github.com/settings/copilot/features",
         }
     }
 }
@@ -71,6 +71,8 @@ pub struct QuotaWindow {
     pub overage_units: Option<f64>,
     /// UTC time the window resets, when known.
     pub resets_at: Option<DateTime<Utc>>,
+    /// Length of the allowance window in seconds, when known.
+    pub window_secs: Option<i64>,
     /// Provider-side data timestamp, when the provider reports one.
     pub provider_data_at: Option<DateTime<Utc>>,
 }
@@ -86,6 +88,7 @@ impl QuotaWindow {
             allowance_is_configured: false,
             overage_units: None,
             resets_at: None,
+            window_secs: None,
             provider_data_at: None,
         }
     }
@@ -106,6 +109,46 @@ impl QuotaWindow {
             _ => None,
         }
     }
+
+    /// Traffic-light pace. `expected` is the share of the allowance that
+    /// would be left if it were used evenly across the window, and
+    /// `slack_days = (left - expected) / 15`, where 15 percentage points is
+    /// about one day of a weekly window. Other window lengths scale that day
+    /// unit by `7 days / window length`. None when left, reset or window
+    /// length is unknown.
+    pub fn pace(&self, now: DateTime<Utc>) -> Option<Pace> {
+        let left = self.remaining_percent()?;
+        let window = self.window_secs.filter(|s| *s > 0)?;
+        let until_reset = (self.resets_at? - now).num_seconds().clamp(0, window);
+        let expected = 100.0 * until_reset as f64 / window as f64;
+        let day_points = 15.0 * WEEK_SECS as f64 / window as f64;
+        let slack_days = (left - expected) / day_points;
+        Some(if slack_days >= 0.0 {
+            Pace::Green
+        } else if slack_days >= -1.0 {
+            Pace::Yellow
+        } else {
+            Pace::Red
+        })
+    }
+}
+
+pub const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Whether usage is on plan (green), up to a day behind (yellow) or more
+/// than a day behind (red).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pace {
+    Green,
+    Yellow,
+    Red,
+}
+
+/// One tray tooltip row with its optional traffic light.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TooltipLine {
+    pub pace: Option<Pace>,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -331,6 +374,7 @@ fn provider_status_row(kind: ProviderKind, status: &ProviderStatus) -> Option<St
         ProviderStatus::Unsupported(_) => "unavailable",
         ProviderStatus::RateLimited(_) => "rate limited",
         ProviderStatus::Error(_) => "error",
+        ProviderStatus::NotConfigured(_) => "not configured",
         _ => return None,
     };
     Some(format!("{}: {}", kind.display_name(), text))
@@ -340,22 +384,39 @@ fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-/// Build the compact tooltip within the Windows limit. `selection` lists the
-/// window ids the user wants in the tooltip; an empty selection shows the
-/// first window of each provider that has data.
-pub fn format_tooltip(state: &AppState, selection: &[String], now: DateTime<Utc>) -> String {
-    let mut rows: Vec<String> = Vec::new();
-
-    let selected_ids: Vec<String> = if selection.is_empty() {
-        let mut ids = Vec::new();
-        for kind in ProviderKind::ALL {
-            if let Some(snap) = state.snapshot(kind) {
-                if let Some(w) = snap.windows.first() {
-                    ids.push(w.id.clone());
+/// Automatic tooltip rows: the first window of each provider that has data,
+/// plus Claude Fable.
+pub fn default_tooltip_ids(state: &AppState) -> Vec<String> {
+    let mut ids = Vec::new();
+    for kind in ProviderKind::ALL {
+        if let Some(snap) = state.snapshot(kind) {
+            if let Some(w) = snap.windows.first() {
+                ids.push(w.id.clone());
+            }
+            if kind == ProviderKind::Claude {
+                if let Some(w) = snap.windows.iter().find(|w| w.id == "claude:model:fable") {
+                    if !ids.contains(&w.id) {
+                        ids.push(w.id.clone());
+                    }
                 }
             }
         }
-        ids
+    }
+    ids
+}
+
+/// Build the compact tooltip rows within the Windows limit. `selection` lists
+/// the window ids the user wants in the tooltip; an empty selection uses
+/// [`default_tooltip_ids`].
+pub fn tooltip_lines(
+    state: &AppState,
+    selection: &[String],
+    now: DateTime<Utc>,
+) -> Vec<TooltipLine> {
+    let mut rows: Vec<TooltipLine> = Vec::new();
+
+    let selected_ids: Vec<String> = if selection.is_empty() {
+        default_tooltip_ids(state)
     } else {
         selection.to_vec()
     };
@@ -367,8 +428,11 @@ pub fn format_tooltip(state: &AppState, selection: &[String], now: DateTime<Utc>
             };
             if let Some(w) = snap.windows.iter().find(|w| &w.id == id) {
                 let stale = matches!(snap.status, ProviderStatus::Stale(_));
-                if let Some(row) = format_window_row(w, now, stale) {
-                    rows.push(row);
+                if let Some(text) = format_window_row(w, now, stale) {
+                    rows.push(TooltipLine {
+                        pace: w.pace(now),
+                        text,
+                    });
                 }
             }
         }
@@ -378,35 +442,40 @@ pub fn format_tooltip(state: &AppState, selection: &[String], now: DateTime<Utc>
     for kind in ProviderKind::ALL {
         if let Some(snap) = state.snapshot(kind) {
             if snap.windows.is_empty() {
-                if let Some(row) = provider_status_row(kind, &snap.status) {
-                    rows.push(row);
+                if let Some(text) = provider_status_row(kind, &snap.status) {
+                    rows.push(TooltipLine { pace: None, text });
                 }
             }
         }
     }
 
-    if rows.is_empty() {
-        return "AIAllowance".to_string();
-    }
-
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut used = 0usize;
     for row in rows {
-        let sep = usize::from(!out.is_empty());
-        let len = utf16_len(&row) + sep;
+        let len = utf16_len(&row.text) + usize::from(!out.is_empty());
         if used + len > TOOLTIP_MAX_UTF16 {
             break;
         }
-        if sep == 1 {
-            out.push('\n');
-        }
-        out.push_str(&row);
+        out.push(row);
         used += len;
     }
     if out.is_empty() {
-        out = "AIAllowance".to_string();
+        out.push(TooltipLine {
+            pace: None,
+            text: "AI Allowance".to_string(),
+        });
     }
     out
+}
+
+/// The tooltip rows as plain text, one row per line.
+#[cfg(test)]
+pub fn format_tooltip(state: &AppState, selection: &[String], now: DateTime<Utc>) -> String {
+    tooltip_lines(state, selection, now)
+        .into_iter()
+        .map(|l| l.text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -416,6 +485,34 @@ mod tests {
 
     fn t(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn pace_compares_left_with_even_use_across_the_window() {
+        let now = t("2026-11-16T00:00:00Z");
+        let mut w = QuotaWindow::new("claude:overall", "Claude");
+        w.window_secs = Some(WEEK_SECS);
+        // Three days into a week: 4/7 (57.1%) should be left.
+        w.resets_at = Some(now + chrono::Duration::days(4));
+        let pace = |w: &mut QuotaWindow, left: f64| {
+            w.used_percent = Some(100.0 - left);
+            w.pace(now)
+        };
+        assert_eq!(pace(&mut w, 57.2), Some(Pace::Green));
+        assert_eq!(pace(&mut w, 50.0), Some(Pace::Yellow));
+        assert_eq!(pace(&mut w, 42.2), Some(Pace::Yellow));
+        assert_eq!(pace(&mut w, 42.0), Some(Pace::Red));
+        // A 30-day window: one day behind is 3.5 points.
+        w.window_secs = Some(30 * 24 * 3600);
+        w.resets_at = Some(now + chrono::Duration::days(15));
+        assert_eq!(pace(&mut w, 47.0), Some(Pace::Yellow));
+        assert_eq!(pace(&mut w, 46.0), Some(Pace::Red));
+        // Unknown window length, reset or allowance has no light.
+        w.window_secs = None;
+        assert_eq!(pace(&mut w, 90.0), None);
+        w.window_secs = Some(WEEK_SECS);
+        w.resets_at = None;
+        assert_eq!(pace(&mut w, 90.0), None);
     }
 
     #[test]
@@ -512,6 +609,7 @@ mod tests {
             w.resets_at = Some(now + chrono::Duration::hours(5));
             windows.push(w);
         }
+
         let ids: Vec<String> = windows.iter().map(|w| w.id.clone()).collect();
         state.apply_success(
             ProviderKind::Codex,
@@ -524,6 +622,33 @@ mod tests {
         let tip = format_tooltip(&state, &ids, now);
         assert!(tip.encode_utf16().count() <= TOOLTIP_MAX_UTF16);
         assert!(tip.starts_with("Work/Codex extra bucket number 0"));
+    }
+
+    #[test]
+    fn default_tooltip_includes_fable_and_unconfigured_copilot() {
+        let now = t("2026-11-16T00:00:00Z");
+        let mut state = AppState::default();
+        let mut overall = QuotaWindow::new("claude:overall", "Claude");
+        overall.used_percent = Some(14.0);
+        let mut fable = QuotaWindow::new("claude:model:fable", "Claude Fable");
+        fable.used_percent = Some(26.0);
+        state.apply_success(
+            ProviderKind::Claude,
+            FetchOutcome {
+                account_key: None,
+                windows: vec![overall, fable],
+            },
+            now,
+        );
+        state.set_not_configured(ProviderKind::Copilot, "disabled");
+        assert_eq!(
+            format_tooltip(&state, &[], now),
+            "Claude: 86% left\nClaude Fable: 74% left\nCopilot: not configured"
+        );
+        assert_eq!(
+            format_tooltip(&state, &["claude:overall".into()], now),
+            "Claude: 86% left\nCopilot: not configured"
+        );
     }
 
     #[test]

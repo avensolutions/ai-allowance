@@ -17,3 +17,20 @@ The `source/` directory preserves the original assets as retrieved:
 The Aven Solutions mark is the property of Aven Solutions and is used here as
 the project icon at the maintainer's request. It is not covered by the
 repository's MIT code license.
+
+## Provider marks
+
+Provider marks were retrieved from their original sites on 2026-11-18:
+
+- `providers/claude.svg`: https://claude.ai/favicon.svg
+- `providers/chatgpt.svg`: https://chatgpt.com/cdn/assets/favicon.6a33781f61.svg
+  (declared in the chatgpt.com page head; its colour-scheme stylesheet was
+  removed so the mark renders in its light-theme black)
+- `providers/copilot.svg`: https://github.githubassets.com/favicons/favicon-copilot.svg
+
+Each SVG was rendered with resvg into a multi-size ICO (16 to 256 pixels,
+PNG-compressed) so Windows can load the exact size it draws. The SVG
+sources are retained alongside the ICO files.
+
+These marks identify the respective providers. They remain the property of
+Anthropic, OpenAI and GitHub, and are not covered by this project's MIT license.

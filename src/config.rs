@@ -1,8 +1,7 @@
-//! User preferences and credential references.
+//! User preferences.
 //!
-//! Configuration lives in the Windows user application-data directory.
-//! Secrets are never stored here; the Copilot token lives in Windows
-//! Credential Manager under service `AIAllowance`, user `github-copilot-pat`.
+//! Configuration lives next to the executable, migrating the legacy user file.
+//! Provider authentication is managed by the installed provider CLIs.
 
 use std::path::PathBuf;
 
@@ -10,8 +9,6 @@ use serde::{Deserialize, Serialize};
 
 pub const APP_DIR_NAME: &str = "AIAllowance";
 pub const CONFIG_FILE_NAME: &str = "config.toml";
-pub const KEYRING_SERVICE: &str = "AIAllowance";
-pub const KEYRING_COPILOT_USER: &str = "github-copilot-pat";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -20,6 +17,16 @@ pub struct Config {
     pub notifications: Notifications,
     pub tooltip: Tooltip,
     pub providers: Providers,
+    pub browser: Browser,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Browser {
+    pub chrome_path: Option<PathBuf>,
+    pub claude_profile: Option<String>,
+    pub codex_profile: Option<String>,
+    pub copilot_profile: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -50,7 +57,7 @@ pub struct Notifications {
 #[serde(default)]
 pub struct Tooltip {
     /// Window ids to show in the compact tooltip, in order. Empty means the
-    /// first window of each enabled provider. Other windows stay in the menu.
+    /// first window of each provider plus Claude Fable. Other windows stay in the menu.
     pub windows: Vec<String>,
 }
 
@@ -106,24 +113,15 @@ impl Default for CodexConfig {
 #[serde(default)]
 pub struct CopilotConfig {
     pub enabled: bool,
-    /// GitHub username the personal Copilot plan belongs to.
-    pub username: Option<String>,
-    /// Total monthly included AI credits. GitHub's usage report does not
-    /// return the allowance, so without this value the app shows credits used
-    /// instead of inventing a percentage. Marked as configured in the UI.
-    pub monthly_included_credits: Option<f64>,
-    /// Billing products counted as Copilot usage (case-insensitive).
-    /// An empty list counts every AI-credit item.
-    pub products: Vec<String>,
+    /// Optional GitHub CLI executable. Defaults to gh on PATH.
+    pub command: Option<PathBuf>,
 }
 
 impl Default for CopilotConfig {
     fn default() -> Self {
         CopilotConfig {
-            enabled: false,
-            username: None,
-            monthly_included_credits: None,
-            products: vec!["copilot".to_string()],
+            enabled: true,
+            command: None,
         }
     }
 }
@@ -133,14 +131,80 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join(CONFIG_FILE_NAME))
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(CONFIG_FILE_NAME)))
+}
+
+pub fn validate(cfg: &Config) -> Result<(), String> {
+    if cfg.general.poll_interval_secs < 60 || cfg.general.poll_interval_secs > i64::MAX as u64 {
+        return Err(
+            "Polling interval must be at least 60 seconds and fit in a signed 64-bit integer."
+                .into(),
+        );
+    }
+    if cfg.notifications.enabled && !cfg.general.poll_enabled {
+        return Err("Enable background polling to use notifications.".into());
+    }
+    for profile in [
+        &cfg.browser.claude_profile,
+        &cfg.browser.codex_profile,
+        &cfg.browser.copilot_profile,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if profile.is_empty()
+            || profile.contains(['/', '\\', '\0'])
+            || profile == "."
+            || profile == ".."
+        {
+            return Err(
+                "Chrome profiles must be directory names such as Default or Profile 1.".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn save(cfg: &Config) -> Result<(), String> {
+    let path = config_path().ok_or("Could not locate the executable directory.")?;
+    save_to_path(cfg, &path)
+}
+
+fn save_to_path(cfg: &Config, path: &std::path::Path) -> Result<(), String> {
+    use std::io::Write;
+    validate(cfg)?;
+    let text =
+        toml::to_string_pretty(cfg).map_err(|e| format!("Could not encode settings: {e}"))?;
+    let temp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| format!("Could not create {}: {e}", temp.display()))?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|_| file.sync_all());
+    drop(file);
+    let result = written.and_then(|_| std::fs::rename(&temp, path));
+    if let Err(e) = result {
+        let cleanup = std::fs::remove_file(&temp);
+        return Err(format!(
+            "Could not save {}: {e}{}",
+            path.display(),
+            cleanup
+                .err()
+                .map(|e| format!("; temporary file cleanup failed: {e}"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 /// Documented template written on first run.
-pub const DEFAULT_CONFIG_TOML: &str = r#"# AIAllowance configuration.
-# This file holds preferences only. Never put tokens here; the Copilot token
-# is stored in Windows Credential Manager (service "AIAllowance", user
-# "github-copilot-pat"). Set it with: aiallowance --set-copilot-token
+pub const DEFAULT_CONFIG_TOML: &str = r#"# AI Allowance configuration.
+# Preferences only. Provider CLIs manage authentication.
 
 [general]
 # Unattended background polling. Required for notifications to fire while you
@@ -154,8 +218,8 @@ enabled = false
 
 [tooltip]
 # Window ids shown in the compact tooltip, in order. Empty = first window of
-# each provider. All windows stay visible in the tray menu. Examples:
-# windows = ["claude:overall", "codex:codex:primary", "copilot:credits"]
+# each provider plus Claude Fable. All windows stay visible in the tray menu.
+# windows = ["claude:overall", "codex:codex:primary", "copilot:premium_interactions"]
 windows = []
 
 [providers.claude]
@@ -171,14 +235,17 @@ enabled = true
 # command = 'C:\path\to\codex.exe'
 
 [providers.copilot]
-# Personal GitHub Copilot AI-credit usage. Needs a fine-grained PAT with the
-# "Plan" read permission stored via: aiallowance --set-copilot-token
-enabled = false
-# username = "your-github-username"
-# Total monthly included credits for your plan (not exposed by the API).
-# Without it the app shows credits used instead of a percentage.
-# monthly_included_credits = 300.0
-products = ["copilot"]
+# Experimental quota snapshots through your existing GitHub CLI sign-in.
+enabled = true
+# command = 'C:\Program Files\GitHub CLI\gh.exe'
+
+[browser]
+# Blank profiles use the default browser. Use Chrome directory names, not
+# display names: for example "Default" or "Profile 1" from chrome://version.
+# chrome_path = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+# claude_profile = "Profile 1"
+# codex_profile = "Default"
+# copilot_profile = "Profile 2"
 "#;
 
 /// Load the configuration, writing the documented template on first run.
@@ -191,16 +258,18 @@ pub fn load_or_create() -> (Config, Option<String>) {
         );
     };
     if !path.exists() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(&path, DEFAULT_CONFIG_TOML) {
+        let legacy = config_dir().map(|dir| dir.join(CONFIG_FILE_NAME));
+        let result = if let Some(legacy) = legacy.filter(|p| p.exists()) {
+            std::fs::copy(legacy, &path).map(|_| ())
+        } else {
+            std::fs::write(&path, DEFAULT_CONFIG_TOML)
+        };
+        if let Err(e) = result {
             return (
                 Config::default(),
-                Some(format!("could not write default config: {e}")),
+                Some(format!("could not create {}: {e}", path.display())),
             );
         }
-        return (Config::default(), None);
     }
     match std::fs::read_to_string(&path) {
         Ok(text) => match toml::from_str::<Config>(&text) {
@@ -233,15 +302,55 @@ mod tests {
             r#"
 [providers.copilot]
 enabled = true
-username = "someone"
-monthly_included_credits = 300.0
+command = 'C:\tools\gh.exe'
 "#,
         )
         .unwrap();
         assert!(cfg.providers.copilot.enabled);
-        assert_eq!(cfg.providers.copilot.username.as_deref(), Some("someone"));
-        assert_eq!(cfg.providers.copilot.monthly_included_credits, Some(300.0));
+        assert_eq!(
+            cfg.providers.copilot.command,
+            Some(PathBuf::from(r"C:\tools\gh.exe"))
+        );
         assert!(cfg.providers.claude.enabled);
         assert_eq!(cfg.general.poll_interval_secs, 300);
+    }
+
+    #[test]
+    fn settings_round_trip_and_validate_optional_values() {
+        let mut cfg = Config::default();
+        cfg.browser.claude_profile = Some("Profile 1".into());
+        cfg.browser.codex_profile = Some("Default".into());
+        assert_eq!(
+            toml::from_str::<Config>(&toml::to_string(&cfg).unwrap()).unwrap(),
+            cfg
+        );
+        assert!(validate(&cfg).is_ok());
+        cfg.browser.claude_profile = Some("..\\other".into());
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn saving_replaces_existing_config_and_rejects_invalid_edits() {
+        let dir = std::env::temp_dir().join(format!(
+            "aiallowance-config-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join(CONFIG_FILE_NAME);
+        let mut cfg = Config::default();
+        save_to_path(&cfg, &path).unwrap();
+        cfg.browser.codex_profile = Some("Profile 2".into());
+        save_to_path(&cfg, &path).unwrap();
+        assert_eq!(
+            toml::from_str::<Config>(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+            cfg
+        );
+        let saved = std::fs::read_to_string(&path).unwrap();
+        cfg.general.poll_interval_secs = 0;
+        assert!(save_to_path(&cfg, &path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

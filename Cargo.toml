@@ -6,6 +6,10 @@ license = "MIT"
 description = "AI subscription usage and reset times in the Windows system tray"
 repository = "https://github.com/avensolutions/ai-allowance"
 
+[[bin]]
+name = "ai-allowance"
+path = "src/main.rs"
+
 [dependencies]
 chrono = { version = "0.4", features = ["serde", "clock"] }
 dirs = "6"
@@ -15,16 +19,26 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "ti
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
 notify-rust = "4"
-reqwest = { version = "0.12", features = ["json"] }
 tao = "0.34"
 tray-icon = "0.21"
+# COM bindings for the native Explorer file and folder picker.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_System_Console",
     "Win32_UI_Shell",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"

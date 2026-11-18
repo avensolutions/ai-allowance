@@ -1,6 +1,6 @@
-# AIAllowance project instructions
+# AI Allowance project instructions
 
-AIAllowance is a Windows system tray utility that shows AI subscription usage and reset times. The initial providers are Claude Ultra, ChatGPT Pro through its Work/Codex allowance, and personal GitHub Copilot Max.
+AI Allowance is a Windows system tray utility that shows AI subscription usage and reset times. The executable is ai-allowance.exe. The initial providers are Claude Ultra, ChatGPT Pro through its Work/Codex allowance, and personal GitHub Copilot Max.
 
 Read this file before changing the project. Treat README.md as the public description of what actually works. Use KICKOFF_PROMPT.md for the initial implementation task when that file is available.
 
@@ -54,7 +54,7 @@ Update countdowns from reset timestamps locally. Countdown changes do not requir
 
 A normal Windows tray tooltip has 127 usable UTF-16 code units. Keep the compact text within that limit, including line breaks. Use the context menu for additional windows, last-update times and full local reset dates. Start with a plain tooltip; add a custom popup only if native tooltip behaviour makes the required interaction unreliable.
 
-The context menu should contain Refresh now, provider status/details, Open usage pages, Settings, Start with Windows and Quit. Settings can initially open a documented configuration file. Start with Windows is opt-in.
+The context menu should contain Refresh now, provider status/details, Open usage pages, Settings, Start with Windows and Quit. Settings opens a native dialog. Show the menu only on right click; left double click opens the native usage dashboard. The per-user installer enables Start with Windows by default with a selected component the user can clear. Portable startup remains opt-in. The checked menu item changes only the AIAllowance value in the current user's Run key.
 
 Use the user's Windows locale/time zone for absolute reset times. Do not hardcode Melbourne or Sydney. Handle suspend/resume, clock changes, Explorer restarts and application shutdown. Keep a single application instance and suppress an unwanted console window in release builds.
 
@@ -108,25 +108,21 @@ Source:
 
 ### GitHub Copilot
 
-Use the documented personal-account billing REST API:
+Use the user's existing GitHub CLI sign-in and run this read-only quota check:
 
 ```text
-GET https://api.github.com/users/{username}/settings/billing/ai_credit/usage
+gh api /copilot_internal/user --jq '{plan: .copilot_plan, reset: .quota_reset_date, quota: .quota_snapshots}'
 ```
 
-The endpoint reference documents a fine-grained PAT with Plan read permission. Confirm current authentication requirements and API version. Avoid broader scopes than the endpoint needs.
+This is an experimental internal interface, explicitly requested by the maintainer. Keep it isolated, bounded and visibly unavailable when it changes. Do not collect or store authentication in the app; let gh manage it.
 
-Query the correct calendar month and filter the applicable Copilot usage. Interpret gross, discounted and net quantities against the current documentation and actual account dashboard. A billed amount of zero does not mean no included allowance was consumed.
+Keep each finite quota snapshot separate. Prefer the provider's percent_remaining and retain credits_used, entitlement, overage_count and timestamp_utc. Exclude explicitly unlimited snapshots from finite allowance bars. Missing data must not become a full allowance.
 
-The usage report alone may not supply the complete allowance. Prefer a verified entitlement source; otherwise allow the user to configure the account's total monthly included credits. Mark a configured allowance as such. If the total is unknown, show credits used and reset time without inventing a percentage.
+Use nonzero quota_reset_at when present, otherwise the response's quota_reset_date at 00:00 UTC. Record this as an observed experimental convention, not a public compatibility guarantee.
 
-Do not hardcode a plan total: flex allotments and promotions can change. Distinguish included usage from purchased overage. Included credits currently reset on the first day of each calendar month at 00:00 UTC; verify this before implementation. Preserve UTC semantics when displaying the date locally.
+Read the active account ID through gh to keep caches account-specific. Do not hardcode a plan total, request a model completion, consume a reset credit or change account settings.
 
-Billing data can lag. Record collection time and any available provider data timestamp separately; a successful poll does not prove real-time accounting. Never use an organization-only usage API for a personal subscription.
-
-Sources:
-- https://docs.github.com/en/rest/billing/usage
-- https://docs.github.com/en/copilot/concepts/billing-and-usage/individuals/billing
+Quota data can lag. Record collection time and the provider data timestamp separately. A successful poll does not prove real-time accounting.
 
 ## Data and error semantics
 
@@ -142,7 +138,7 @@ Use per-provider/account cache entries. A failure in one adapter must not erase 
 
 Notifications are optional. Initial thresholds are 20% and 10% remaining, plus a confirmed reset notification. Alert on crossings, not every refresh. Deduplicate per account, quota window and reset cycle. Do not issue threshold or reset alerts from stale or unavailable data.
 
-Store configuration in the Windows user application-data directory. Store user-supplied secrets in Windows Credential Manager through a suitable maintained Rust library. Never put tokens in TOML, logs, fixtures, command arguments or repository files. Keep normal usage snapshots in memory initially.
+Store configuration in config.toml next to the executable, migrating an existing Windows user application-data configuration on first run. The executable directory must be writable. Provider CLIs manage authentication. Never put credentials in TOML, logs, fixtures, command arguments or repository files. Keep normal usage snapshots in memory initially.
 
 Launch helpers without visible console windows. Pass input through structured stdin and arguments without a shell. Redact credentials and personal identifiers from diagnostics. No telemetry, remote service, administrator requirement or cloud synchronization is part of the initial scope.
 

@@ -7,7 +7,7 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::config::Config;
-use crate::state::{format_tooltip, format_window_value, AppState, ProviderKind, ProviderStatus};
+use crate::state::{format_window_value, tooltip_lines, AppState, ProviderKind, ProviderStatus};
 
 pub const MENU_ID_REFRESH: &str = "refresh";
 pub const MENU_ID_SETTINGS: &str = "settings";
@@ -16,10 +16,11 @@ pub const MENU_ID_QUIT: &str = "quit";
 pub const MENU_ID_OPEN_PREFIX: &str = "open:";
 
 pub struct TrayUi {
+    tooltip: crate::tooltip::Tooltip,
     tray: TrayIcon,
 }
 
-fn status_text(status: &ProviderStatus) -> Option<String> {
+pub(crate) fn status_text(status: &ProviderStatus) -> Option<String> {
     Some(match status {
         ProviderStatus::NotConfigured(reason) => format!("not configured: {reason}"),
         ProviderStatus::Loading => "loading".to_string(),
@@ -49,7 +50,7 @@ fn local_time(t: DateTime<Utc>) -> String {
 
 /// Build the context menu from current state. Rebuilt on every update; the
 /// item count varies with the available windows.
-fn build_menu(state: &AppState, autostart: bool) -> Menu {
+fn build_menu(state: &AppState, autostart: Option<bool>) -> Menu {
     let menu = Menu::new();
 
     for kind in ProviderKind::ALL {
@@ -117,8 +118,8 @@ fn build_menu(state: &AppState, autostart: bool) -> Menu {
     menu.append(&CheckMenuItem::with_id(
         MENU_ID_AUTOSTART,
         "Start with Windows",
-        true,
-        autostart,
+        autostart.is_some(),
+        autostart.unwrap_or(false),
         None,
     ))
     .ok();
@@ -129,23 +130,38 @@ fn build_menu(state: &AppState, autostart: bool) -> Menu {
 }
 
 impl TrayUi {
-    pub fn new(state: &AppState, config: &Config, autostart: bool) -> Result<Self, String> {
+    pub fn new(state: &AppState, config: &Config, autostart: Option<bool>) -> Result<Self, String> {
         let icon = Icon::from_resource(1, Some((32, 32)))
             .map_err(|e| format!("could not load tray icon resource: {e}"))?;
-        let tooltip = format_tooltip(state, &config.tooltip.windows, Utc::now());
+        let tooltip = tooltip_lines(state, &config.tooltip.windows, Utc::now());
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip(&tooltip)
             .with_menu(Box::new(build_menu(state, autostart)))
+            .with_menu_on_left_click(false)
             .build()
             .map_err(|e| format!("could not create tray icon: {e}"))?;
-        Ok(TrayUi { tray })
+        let mut tooltip = crate::tooltip::Tooltip::new(tray.window_handle(), tooltip)?;
+        tooltip.follow_shell_hover(tray.window_handle());
+        Ok(TrayUi { tray, tooltip })
     }
 
-    pub fn update(&self, state: &AppState, config: &Config, autostart: bool) {
-        let tooltip = format_tooltip(state, &config.tooltip.windows, Utc::now());
-        let _ = self.tray.set_tooltip(Some(tooltip));
+    pub fn update(&mut self, state: &AppState, config: &Config, autostart: Option<bool>) {
+        let tooltip = tooltip_lines(state, &config.tooltip.windows, Utc::now());
+        self.tooltip.update(tooltip);
         self.tray
             .set_menu(Some(Box::new(build_menu(state, autostart))));
+    }
+
+    pub fn handle_event(&mut self, event: &tray_icon::TrayIconEvent) {
+        match event {
+            // The shell's hover notifications open and close the popup.
+            tray_icon::TrayIconEvent::Enter { .. } | tray_icon::TrayIconEvent::Move { .. }
+                if self.tooltip.follows_shell_hover() => {}
+            tray_icon::TrayIconEvent::Enter { position, .. }
+            | tray_icon::TrayIconEvent::Move { position, .. } => {
+                self.tooltip.show(position.x as i32, position.y as i32)
+            }
+            _ => self.tooltip.hide(),
+        }
     }
 }

@@ -41,3 +41,24 @@ jobs:
 
       - name: Release build
         run: cargo build --release
+
+      - name: Install Node.js for helper packaging
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install NSIS
+        run: choco install nsis --yes --no-progress
+
+      - name: Build per-user installer
+        run: .\installer\build.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+
+      - name: Test installer with isolated current-user keys
+        run: .\installer\test.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-allowance-windows-x64-installer
+          path: target/installer/*-setup.exe
+          if-no-files-found: error

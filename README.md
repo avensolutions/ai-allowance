@@ -1,15 +1,17 @@
-# AIAllowance
+# AI Allowance
 
 AI subscription usage and reset times in your Windows system tray.
 
-AIAllowance is a small native Rust utility that shows your remaining Claude,
+AI Allowance is a small native Rust utility that shows your remaining Claude,
 ChatGPT Work/Codex and GitHub Copilot allowances without opening several usage
-pages. Hover over the Aven Solutions starburst icon for a compact summary:
+pages. Hover over the Aven Solutions starburst icon for a compact summary,
+with a red, yellow or green traffic light before each row:
 
 ```text
-Claude: 37% left | 6h
-Work/Codex: 20% left | 7d
-Copilot: 50% left | 14d
+(green)  Claude: 37% left | 6h
+(yellow) Claude Fable: 62% left | 6d
+(green)  Work/Codex: 20% left | 7d
+(red)    Copilot: 50% left | 14d
 ```
 
 Separate quotas get separate entries, including Claude's overall and
@@ -19,14 +21,31 @@ percentage without a valid denominator.
 
 **Status:** first working version. The tray application builds and runs on
 Windows 11 x64. Claude and Work/Codex collection has been validated against
-live accounts; the Copilot adapter is implemented against the documented API
-schema but has not yet been verified against live billing data (see
+live accounts. Copilot quota collection through GitHub CLI has also been
+validated live, using an explicitly experimental interface (see
 [docs/provider-validation.md](docs/provider-validation.md)).
 
 ## What works
 
-- Native tray icon with hover tooltip and right-click menu (no .NET,
-  Electron, Tauri or browser UI).
+- Native tray icon with a hover popup and right-click-only menu. A single
+  left click does not open the menu. Double-click with the left button for
+  a centered native usage window with Claude, ChatGPT and GitHub Copilot
+  cards with original provider logos and separate slim allowance-left bars
+  for each available window. Unknown allowances show usage text instead of
+  a misleading bar.
+- Dialog type follows Claude's settings dialog: 14px body text, 12px
+  captions and 15px semibold headings. Claude's own typeface is proprietary
+  and is not bundled; the app uses Segoe UI, Claude's Windows fallback.
+  Provider logos are multi-size icons rendered from the providers' vector
+  marks and loaded at the exact drawn size.
+- Hover rows carry a pace traffic light. `expected` is the share that would
+  be left if the allowance were used evenly across its window, and
+  `slack_days = (left - expected) / 15`: green when `slack_days >= 0`,
+  yellow when `-1 <= slack_days < 0`, red when `slack_days < -1`. 15
+  percentage points is about one day of a weekly window; other window
+  lengths scale that day unit by 7 days / window length (about 3.5 points
+  for a monthly Copilot window). A hollow grey circle means the pace is
+  unknown (no percentage, reset time or window length).
 - Cached values show immediately; hovering refreshes providers whose data is
   older than 60 seconds, concurrently and with one request in flight per
   provider. Countdown text updates locally without network requests.
@@ -35,8 +54,14 @@ schema but has not yet been verified against live billing data (see
   error and not configured. One provider's failure never hides another's
   data.
 - Context menu: per-window details with exact local reset times and last
-  update time, Refresh now, Open usage pages, Settings (opens the config
-  file), opt-in Start with Windows, Quit.
+  update time, Refresh now, Open usage pages, native Settings dialog,
+  checked Start with Windows toggle, Quit.
+- Settings pages for general preferences, provider configuration and
+  per-provider Chrome profiles. Saving applies changes without restarting.
+  Every executable, folder and Chrome profile field has a Browse button
+  that opens the native Windows Explorer picker.
+  Copilot uses your existing GitHub CLI authentication, without storing
+  credentials in the app.
 - Optional background polling (default 5 minutes) and toast notifications at
   20% and 10% remaining plus confirmed resets, deduplicated per window and
   reset cycle. Notifications require polling to be useful unattended.
@@ -49,7 +74,7 @@ schema but has not yet been verified against live billing data (see
 | --- | --- | --- |
 | Claude | Claude Agent SDK experimental usage API via a pinned Node.js helper | Experimental: the SDK method may change in any release. Uses your existing Claude Code sign-in. No prompt is submitted and no tokens are consumed. |
 | Work/Codex | Official local `codex app-server` (`account/rateLimits/read`) | Uses your existing ChatGPT sign-in. Covers the Work/Codex buckets only, not other ChatGPT feature limits. Never consumes rate-limit reset credits. |
-| Copilot | GitHub billing AI-credit usage REST API (personal account) | Needs a fine-grained PAT with the "Plan" read permission. The API does not expose your total allowance; configure `monthly_included_credits` to see a percentage, otherwise credits used are shown. Unverified against live data. |
+| Copilot | `gh api /copilot_internal/user` quota snapshots | Experimental internal interface, deliberately enabled at the maintainer's request. Uses the active GitHub CLI sign-in and the reported allowance and remaining percentage. Unlimited buckets are not presented as finite allowances. |
 
 ## Requirements
 
@@ -59,15 +84,15 @@ schema but has not yet been verified against live billing data (see
 - For Work/Codex: a codex CLI (`codex` on PATH, the binary bundled with the
   ChatGPT VS Code extension is found automatically, or set
   `providers.codex.command`).
-- For Copilot: a fine-grained GitHub PAT with the account permission
-  "Plan" (read).
+- For Copilot: GitHub CLI (`gh`) on PATH, signed in using `gh auth login`,
+  or set `providers.copilot.command` to its executable.
 
 ## Build and run
 
 ```text
 cargo build --release
 npm install --prefix helpers/claude-usage
-target\release\aiallowance.exe
+target\release\ai-allowance.exe
 ```
 
 The helper install is only needed for the Claude provider. When the app runs
@@ -82,32 +107,113 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+## Windows installer
+
+With NSIS 3 installed, build the per-user Windows x64 installer in PowerShell:
+
+```powershell
+.\installer\build.ps1
+# If NSIS is not on PATH:
+.\installer\build.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+```
+
+The script builds the release executable and restores the locked Claude helper
+dependencies. The packaged Rust executable statically links the Visual C++
+runtime, avoiding a machine-wide runtime installation.
+Output: `target\installer\ai-allowance-0.1.0-setup.exe`.
+CI also builds and uploads the installer, without publishing a release.
+The installer is currently unsigned.
+
+After building, run installer smoke tests with `.\installer\test.ps1`
+(the same `-MakeNsis` option is supported). Tests redirect registry paths,
+shortcuts and files to isolated current-user test locations. They verify
+startup defaults, quoting, preservation of unrelated values and preferences,
+running-instance protection, and uninstall with startup enabled or disabled.
+Interactive wizard appearance and an actual Windows sign-in remain manual
+checks.
+
+Setup installs into `%LOCALAPPDATA%\Programs\AI Allowance` without elevation.
+It bundles the Claude helper and its dependencies, but not Node.js, Codex or
+GitHub CLI. The provider requirements above still apply.
+Start with Windows is selected by default on the components page; clear it
+to skip enabling startup. The finish page has a selected **Launch AI Allowance**
+checkbox.
+
+Startup uses only the `AIAllowance` string value in
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, containing
+the quoted full executable path. The tray menu checkmark reflects that entry.
+Unchecking deletes only that value; checking writes it back. Errors are shown
+in a dialog instead of silently reporting success. Portable builds do not
+enable startup unless it was already enabled.
+
+All installer registry writes, uninstall registration and Start menu shortcuts
+are per-user. No machine-wide keys, other startup values, authentication,
+PATH or system settings are changed. Quit the tray app before installing,
+upgrading or uninstalling. Uninstall removes its startup value only if it
+still points to that installation, and preserves `config.toml` and unknown
+files in the installation directory. Uninstall is available in Windows
+Installed apps or the user's Start menu.
+
 ## Configuration
 
-The first run writes a documented config file to
-`%APPDATA%\AIAllowance\config.toml` (also reachable via the tray menu's
-Settings item). Providers are enabled there; Copilot additionally needs:
+Use the tray menu's Settings dialog to configure the app. Preferences live
+in `config.toml` next to the executable, so that directory must be writable.
+On first run, an existing `%APPDATA%\AIAllowance\config.toml` is copied there
+without changing the original. Otherwise a default file is created.
+The portable file takes precedence on subsequent runs. Manual edits are
+read on restart; settings saved through the dialog apply immediately.
+Existing Start with Windows entries are updated to the renamed executable
+when the new app starts, without enabling startup for users who opted out.
+
+Copilot is enabled by default and reuses the active GitHub CLI account.
+An existing configuration that disabled Copilot keeps that preference;
+enable it in Settings > Providers. No account name or allowance total is
+required:
 
 ```toml
 [providers.copilot]
 enabled = true
-username = "your-github-username"
-# Optional: your plan's total monthly included credits. Shown as a
-# percentage marked "configured total". Never hardcoded by the app.
-# monthly_included_credits = 300.0
+# command = 'C:\Program Files\GitHub CLI\gh.exe'
 ```
 
-Store the Copilot token in Windows Credential Manager (never in files):
+The app runs this read-only quota check without starting a model turn:
 
 ```text
-aiallowance --set-copilot-token
+gh api /copilot_internal/user --jq '{plan: .copilot_plan, reset: .quota_reset_date, quota: .quota_snapshots}'
 ```
 
-The compact tooltip shows the first window of each provider by default;
-choose specific windows with `tooltip.windows` using the ids listed in
-docs/provider-validation.md (for example `claude:overall`,
-`claude:model:fable`, `codex:codex:primary`, `copilot:credits`). All windows
-remain visible in the menu.
+Settings > General > Tray tooltip chooses the rows shown on hover. With
+Automatic selected it shows the first window of each provider plus Claude
+Fable, when present. Clear Automatic to tick specific rows; the list fills
+in after the first successful refresh. Windows limits the hover summary to
+about four rows (127 UTF-16 units), so all windows always remain visible in
+the usage window and the menu. In `config.toml` an empty `tooltip.windows`
+means Automatic; otherwise it lists window ids such as `claude:overall`,
+`claude:model:fable`, `codex:codex:primary` or `copilot:premium_interactions`.
+
+### Browser profiles
+
+Settings > Browser profiles accepts separate Chrome profile directories for
+Claude, ChatGPT and GitHub Copilot. Browse opens Chrome's User Data folder;
+pick the profile folder (for example `Default` or `Profile 1`) and the app
+stores its folder name. Only folders directly inside a Chrome user data
+folder are accepted. You can also find the name in `chrome://version` under
+Profile Path. Chrome is located in standard installation directories,
+or you can specify its executable.
+
+Blank profile fields use the system default browser. A configured profile
+opens Chrome directly with `--profile-directory`, without changing browser
+defaults or signing you in. For example:
+
+```toml
+[browser]
+claude_profile = "Profile 1"
+codex_profile = "Default"
+copilot_profile = "Profile 2"
+```
+
+The Copilot usage link opens <https://github.com/settings/copilot/features>.
+Chrome must already have the desired accounts signed into those profiles.
 
 ## Known issues and limitations
 
@@ -115,14 +221,24 @@ remain visible in the menu.
   break it. The helper is pinned to `@anthropic-ai/claude-agent-sdk 0.3.325`.
 - Claude refreshes take several seconds because the helper spawns the SDK
   runtime each time.
-- Copilot field interpretation (included consumption = discounted quantity,
-  overage = net quantity) follows the documented schema but is not yet
-  validated against a live dashboard.
-- Tooltip text that would exceed the 127 UTF-16 unit Windows limit is
-  truncated; the menu always has the full details.
+- Copilot's internal quota endpoint is not a public compatibility contract.
+  It can change or become unavailable. Reset dates are interpreted as UTC;
+  zero per-bucket reset timestamps use the reported monthly date.
+- The hover popup is custom painted so each row can carry a coloured
+  traffic light. It still selects whole rows within 127 UTF-16 units;
+  additional windows remain available in the usage dialog and menu.
+- The popup opens and closes on the shell's own hover notifications. The
+  app subclasses tray-icon's hidden window and switches the icon to
+  `NOTIFYICON_VERSION_4` without `NIF_SHOWTIP`, which also stops Windows 11
+  showing an empty native tooltip box. This relies on tray-icon's private
+  callback message (6002, checked against tray-icon 0.21.3); if the switch
+  fails, the popup falls back to tray-icon's enter/leave events.
 - Checks that need interactive sessions (suspend/resume, Explorer restart,
   display scaling changes) are manual; see docs/provider-validation.md for
   what was and was not verified.
+- The native dialogs have automated Windows control tests. Visual checks
+  across multiple monitors, taskbar themes and scale changes still need
+  manual validation.
 
 ## Development
 
@@ -141,5 +257,5 @@ not covered by the MIT code license.
 MIT, see [LICENSE](LICENSE). Third-party dependencies and branding retain
 their own terms.
 
-AIAllowance is an independent project and is not affiliated with Anthropic,
+AI Allowance is an independent project and is not affiliated with Anthropic,
 OpenAI or GitHub.

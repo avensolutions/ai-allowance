@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use crate::config::ClaudeConfig;
 use crate::providers::hide_console;
-use crate::state::{FetchError, FetchOutcome, QuotaWindow};
+use crate::state::{FetchError, FetchOutcome, QuotaWindow, WEEK_SECS};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -159,6 +159,7 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
     if let Some(w) = limits.seven_day.as_ref() {
         if w.utilization.is_some() || w.resets_at.is_some() {
             let mut q = QuotaWindow::new("claude:overall", "Claude");
+            q.window_secs = Some(WEEK_SECS);
             q.used_percent = w.utilization.filter(|u| u.is_finite());
             q.resets_at = parse_iso(&w.resets_at);
             windows.push(q);
@@ -170,6 +171,7 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
             .find(|l| l.kind.as_deref() == Some("weekly_all"))
         {
             let mut q = QuotaWindow::new("claude:overall", "Claude");
+            q.window_secs = Some(WEEK_SECS);
             q.used_percent = l.percent.filter(|u| u.is_finite());
             q.resets_at = parse_iso(&l.resets_at);
             windows.push(q);
@@ -179,6 +181,7 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
     if let Some(w) = limits.five_hour.as_ref() {
         if w.utilization.is_some() || w.resets_at.is_some() {
             let mut q = QuotaWindow::new("claude:5h", "Claude 5h");
+            q.window_secs = Some(5 * 60 * 60);
             q.used_percent = w.utilization.filter(|u| u.is_finite());
             q.resets_at = parse_iso(&w.resets_at);
             windows.push(q);
@@ -197,6 +200,7 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
                 format!("claude:model:{}", slug(name)),
                 format!("Claude {name}"),
             );
+            q.window_secs = Some(WEEK_SECS);
             q.used_percent = m.utilization.filter(|u| u.is_finite());
             q.resets_at = parse_iso(&m.resets_at);
             windows.push(q);
@@ -222,6 +226,7 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
                     format!("claude:model:{}", slug(name)),
                     format!("Claude {name}"),
                 );
+                q.window_secs = Some(WEEK_SECS);
                 q.used_percent = l.percent.filter(|u| u.is_finite());
                 q.resets_at = parse_iso(&l.resets_at);
                 windows.push(q);
