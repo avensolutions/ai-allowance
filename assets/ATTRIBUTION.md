@@ -18,6 +18,14 @@ The Aven Solutions mark is the property of Aven Solutions and is used here as
 the project icon at the maintainer's request. It is not covered by the
 repository's MIT code license.
 
+## Installer artwork
+
+The installer and uninstaller use `aiallowance.ico` for their application
+icons. `installer/sidebar.bmp` (164x314) and `installer/header.bmp` (150x57)
+place the original turquoise starburst from `source/favicon-96x96.png` on
+white backgrounds. Regenerate these 24-bit NSIS bitmaps on Windows with
+`.\installer\generate-artwork.ps1` from the repository root.
+
 ## Provider marks
 
 Provider marks were retrieved from their original sites on 2026-11-18:

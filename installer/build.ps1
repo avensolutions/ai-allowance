@@ -13,15 +13,14 @@ try {
     $version = ($metadata.packages | Where-Object name -eq 'aiallowance').version
     if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Installer requires a three-part numeric version.' }
 
-    cargo rustc --release --locked --target-dir target\installer-build --bin ai-allowance -- -C target-feature=+crt-static
-    if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
-    npm ci --omit=dev --prefix helpers\claude-usage
-    if ($LASTEXITCODE -ne 0) { throw 'Claude helper dependency restore failed.' }
+    if (-not (Test-Path -LiteralPath 'target\installer-build\release\ai-allowance.exe' -PathType Leaf)) {
+        throw 'Prebuilt ai-allowance.exe is missing. Run the release build command in README.md before packaging.'
+    }
 
     New-Item -ItemType Directory -Force target\installer | Out-Null
     & $compiler.Source /V3 /WX "/DVERSION=$version" installer\ai-allowance.nsi
     if ($LASTEXITCODE -ne 0) { throw 'NSIS compilation failed.' }
-    Write-Output "Installer: $(Join-Path $root "target\installer\ai-allowance-$version-setup.exe")"
+    Write-Output "Installer: $(Join-Path $root "target\installer\ai-allowance-$version-windows-x64-setup.exe")"
 }
 finally {
     Pop-Location

@@ -22,8 +22,11 @@ function Assert-True([bool]$Condition, [string]$Message) {
 }
 
 function Invoke-Setup {
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
     $process = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+    $timer.Stop()
     Assert-True ($process.ExitCode -eq 0) "Install failed: $($process.ExitCode)"
+    Write-Output ('Silent install: {0:F2} seconds' -f $timer.Elapsed.TotalSeconds)
 }
 
 function Invoke-Uninstall([int]$ExpectedCode = 0) {
@@ -70,7 +73,11 @@ try {
         $expected = '"' + (Join-Path $installDir 'ai-allowance.exe') + '"'
         Assert-True ($run.GetValue('AIAllowance') -ceq $expected) 'Default startup path is not correctly quoted.'
         Assert-True ($run.GetValueKind('AIAllowance') -eq [Microsoft.Win32.RegistryValueKind]::String) 'Startup must be REG_SZ.'
-        Assert-True (Test-Path "$installDir\helpers\claude-usage\node_modules\@anthropic-ai\claude-agent-sdk\package.json") 'Claude SDK missing from installed payload.'
+        $files = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -Force)
+        $unexpected = @($files | Where-Object Name -NotIn @('ai-allowance.exe', 'Uninstall.exe', 'LICENSE', 'README.md'))
+        Assert-True ($files.Count -eq 4 -and $unexpected.Count -eq 0) 'Fresh setup installed unexpected files.'
+        $prebuilt = Join-Path $root 'target\installer-build\release\ai-allowance.exe'
+        Assert-True ((Get-FileHash "$installDir\ai-allowance.exe").Hash -eq (Get-FileHash $prebuilt).Hash) 'Installed executable differs from the prebuilt release.'
         $config = Join-Path $installDir 'config.toml'
         Set-Content $config '# preserve preferences'
         Set-Content (Join-Path $installDir 'unrelated.txt') 'preserve file'

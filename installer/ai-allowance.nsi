@@ -11,7 +11,7 @@ SetCompressor /SOLID lzma
 !error "Pass /DVERSION=<Cargo package version>."
 !endif
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "..\target\installer\ai-allowance-${VERSION}-setup.exe"
+!define OUTPUT_FILE "..\target\installer\ai-allowance-${VERSION}-windows-x64-setup.exe"
 !endif
 
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -23,8 +23,8 @@ OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\AI Allowance"
 ShowInstDetails show
 ShowUninstDetails show
-Icon "..\assets\aiallowance.ico"
-UninstallIcon "..\assets\aiallowance.ico"
+!define MUI_ICON "..\assets\aiallowance.ico"
+!define MUI_UNICON "..\assets\aiallowance.ico"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "AI Allowance"
 VIAddVersionKey /LANG=1033 "FileDescription" "AI Allowance per-user installer"
@@ -32,6 +32,11 @@ VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "AIAllowance contributors"
 
 !define MUI_ABORTWARNING
+!define MUI_WELCOMEFINISHPAGE_BITMAP "..\assets\installer\sidebar.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "..\assets\installer\sidebar.bmp"
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_RIGHT
+!define MUI_HEADERIMAGE_BITMAP "..\assets\installer\header.bmp"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\ai-allowance.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch AI Allowance"
 !insertmacro MUI_PAGE_WELCOME
@@ -86,13 +91,6 @@ Section "AI Allowance (required)" AppSection
     File "..\target\installer-build\release\ai-allowance.exe"
     File "..\LICENSE"
     File "..\README.md"
-    SetOutPath "$INSTDIR\helpers\claude-usage"
-    File "..\helpers\claude-usage\usage.ts"
-    File "..\helpers\claude-usage\package.json"
-    File "..\helpers\claude-usage\package-lock.json"
-    File "..\helpers\claude-usage\README.md"
-    File /r "..\helpers\claude-usage\node_modules"
-    SetOutPath "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateDirectory "${START_MENU}"
     CreateShortcut "${START_MENU}\AI Allowance.lnk" "$INSTDIR\ai-allowance.exe"
@@ -148,11 +146,6 @@ Section "Uninstall"
     Delete "$INSTDIR\ai-allowance.exe"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\README.md"
-    RMDir /r "$INSTDIR\helpers\claude-usage\node_modules"
-    Delete "$INSTDIR\helpers\claude-usage\usage.ts"
-    Delete "$INSTDIR\helpers\claude-usage\package.json"
-    Delete "$INSTDIR\helpers\claude-usage\package-lock.json"
-    Delete "$INSTDIR\helpers\claude-usage\README.md"
     Delete "${START_MENU}\AI Allowance.lnk"
     Delete "${START_MENU}\Uninstall.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
@@ -164,7 +157,5 @@ Section "Uninstall"
     ${EndIf}
     ; Non-recursive removal deliberately preserves config.toml and unknown files.
     RMDir "${START_MENU}"
-    RMDir "$INSTDIR\helpers\claude-usage"
-    RMDir "$INSTDIR\helpers"
     RMDir "$INSTDIR"
 SectionEnd

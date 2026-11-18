@@ -109,18 +109,20 @@ cargo test
 
 ## Windows installer
 
-With NSIS 3 installed, build the per-user Windows x64 installer in PowerShell:
+With NSIS 3 installed, build the release executable first, then package it
+into the per-user Windows x64 installer in PowerShell:
 
 ```powershell
+cargo rustc --release --locked --target-dir target\installer-build --bin ai-allowance -- -C target-feature=+crt-static
 .\installer\build.ps1
 # If NSIS is not on PATH:
 .\installer\build.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 ```
 
-The script builds the release executable and restores the locked Claude helper
-dependencies. The packaged Rust executable statically links the Visual C++
-runtime, avoiding a machine-wide runtime installation.
-Output: `target\installer\ai-allowance-0.1.0-setup.exe`.
+The packaging script uses the prebuilt executable without compiling it or
+restoring provider dependencies. The release build above statically links
+the Visual C++ runtime, avoiding a machine-wide runtime installation.
+Output: `target\installer\ai-allowance-0.1.0-windows-x64-setup.exe`.
 CI also builds and uploads the installer, without publishing a release.
 The installer is currently unsigned.
 
@@ -133,11 +135,22 @@ Interactive wizard appearance and an actual Windows sign-in remain manual
 checks.
 
 Setup installs into `%LOCALAPPDATA%\Programs\AI Allowance` without elevation.
-It bundles the Claude helper and its dependencies, but not Node.js, Codex or
-GitHub CLI. The provider requirements above still apply.
+It extracts the tray executable, uninstaller, license and README, then adds
+per-user shortcuts and registration. It does not build, download, install or
+run any provider tooling. For Claude usage, set up the optional helper
+separately with `npm ci --prefix helpers/claude-usage` from this repository
+and point Settings > Providers at the resulting `helpers\claude-usage`
+folder. Without that helper, Claude usage is unavailable on a clean install.
+Codex and Copilot keep using their existing CLI integrations.
+
+If you already installed the earlier package that bundled Claude, quit the
+tray app and uninstall that version first to remove its bundled files.
+The earlier uninstaller preserves `config.toml`. The new installer does not
+delete existing helper files during an upgrade.
+
 Start with Windows is selected by default on the components page; clear it
-to skip enabling startup. The finish page has a selected **Launch AI Allowance**
-checkbox.
+to skip enabling startup. **Launch AI Allowance** is checked by default on the
+finish page. Clear it to finish setup without opening the app.
 
 Startup uses only the `AIAllowance` string value in
 `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, containing

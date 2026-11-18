@@ -40,12 +40,7 @@ jobs:
         run: cargo test
 
       - name: Release build
-        run: cargo build --release
-
-      - name: Install Node.js for helper packaging
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
+        run: cargo rustc --release --locked --target-dir target\installer-build --bin ai-allowance -- -C target-feature=+crt-static
 
       - name: Install NSIS
         run: choco install nsis --yes --no-progress
@@ -60,5 +55,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ai-allowance-windows-x64-installer
-          path: target/installer/*-setup.exe
+          path: target/installer/*-windows-x64-setup.exe
           if-no-files-found: error
