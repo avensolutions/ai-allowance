@@ -4,11 +4,35 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
+  version:
+    name: Rust version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a higher Cargo version for Rust changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            echo 'No previous commit on main to compare.'
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}"; then
+            git fetch --no-tags origin "$BASE_SHA"
+          fi
+          python3 .github/scripts/check-version.py "$BASE_SHA" "$HEAD_SHA"
+
   windows:
     name: Build and test (Windows)
     runs-on: windows-latest
@@ -33,11 +57,11 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # Tests use synthetic fixtures only; no live credentials are required.
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Release build
         run: cargo rustc --release --locked --target-dir target\installer-build --bin ai-allowance -- -C target-feature=+crt-static
@@ -55,5 +79,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ai-allowance-windows-x64-installer
-          path: target/installer/*-windows-x64-setup.exe
+          path: target/installer/ai-allowance-windows-x64-setup.exe
           if-no-files-found: error

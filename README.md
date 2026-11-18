@@ -1,18 +1,18 @@
 # AI Allowance
 
-AI subscription usage and reset times in your Windows system tray.
+**Know what's left. See when it resets. Keep working.**
 
-AI Allowance is a small native Rust utility that shows your remaining Claude,
-ChatGPT Work/Codex and GitHub Copilot allowances without opening several usage
-pages. Hover over the Aven Solutions starburst icon for a compact summary,
-with a red, yellow or green traffic light before each row:
+Your Claude, ChatGPT Work/Codex and GitHub Copilot allowances in one native
+Windows tray app. Check remaining usage and reset times without switching
+between account pages.
 
-```text
-(green)  Claude: 37% left | 6h
-(yellow) Claude Fable: 62% left | 6d
-(green)  Work/Codex: 20% left | 7d
-(red)    Copilot: 50% left | 14d
-```
+![AI Allowance dashboard showing separate Claude, Work/Codex and GitHub Copilot allowances and reset times](assets/screenshots/ai-allowance.png)
+
+**A hover for the essentials. A double-click for the details.** Hover over
+the starburst tray icon for a compact summary with usage-pace traffic
+lights. Double-click to open the dashboard above.
+
+![Windows system tray with the AI Allowance hover popup showing remaining allowances, reset countdowns and traffic lights](assets/screenshots/systray.png)
 
 Separate quotas get separate entries, including Claude's overall and
 model-scoped (for example Fable) weekly windows and multiple Work/Codex
@@ -38,14 +38,12 @@ validated live, using an explicitly experimental interface (see
   and is not bundled; the app uses Segoe UI, Claude's Windows fallback.
   Provider logos are multi-size icons rendered from the providers' vector
   marks and loaded at the exact drawn size.
-- Hover rows carry a pace traffic light. `expected` is the share that would
-  be left if the allowance were used evenly across its window, and
-  `slack_days = (left - expected) / 15`: green when `slack_days >= 0`,
-  yellow when `-1 <= slack_days < 0`, red when `slack_days < -1`. 15
-  percentage points is about one day of a weekly window; other window
-  lengths scale that day unit by 7 days / window length (about 3.5 points
-  for a monthly Copilot window). A hollow grey circle means the pace is
-  unknown (no percentage, reset time or window length).
+- Hover rows project how much allowance will be used by reset at the
+  current average rate. Green means under 90% projected use, amber means
+  90% through 100%, and red means over 100% or already exhausted. During
+  the first 10% of a window, the projection uses 10% as its minimum elapsed
+  time so a small burst just after reset does not trigger a warning.
+  A hollow grey circle means pace is unknown or the reset is being checked.
 - Cached values show immediately; hovering refreshes providers whose data is
   older than 60 seconds, concurrently and with one request in flight per
   provider. Countdown text updates locally without network requests.
@@ -122,9 +120,9 @@ cargo rustc --release --locked --target-dir target\installer-build --bin ai-allo
 The packaging script uses the prebuilt executable without compiling it or
 restoring provider dependencies. The release build above statically links
 the Visual C++ runtime, avoiding a machine-wide runtime installation.
-Output: `target\installer\ai-allowance-0.1.0-windows-x64-setup.exe`.
-CI also builds and uploads the installer, without publishing a release.
-The installer is currently unsigned.
+Output: `target\installer\ai-allowance-windows-x64-setup.exe`.
+The installer is currently unsigned. The filename stays the same across
+versions; the installer still embeds the package version.
 
 After building, run installer smoke tests with `.\installer\test.ps1`
 (the same `-MakeNsis` option is supported). Tests redirect registry paths,
@@ -258,8 +256,16 @@ Chrome must already have the desired accounts signed into those profiles.
 Read [AGENTS.md](AGENTS.md) before making changes. Provider adapters live in
 `src/providers/` and are independent of the tray UI (`src/tray.rs`,
 Windows-only). Parsing is tested against synthetic fixtures in
-`tests/fixtures/`; CI (`.github/workflows/ci.yml`) runs formatting, clippy,
-tests and a release build on Windows without live credentials.
+`tests/fixtures/`. [CI](.github/workflows/ci.yml) runs formatting, Clippy,
+unit tests, and installer smoke tests on Windows for pushes and pull
+requests to `main`. No live credentials are needed. Changes to Rust
+(`.rs`) files outside `.github/` and `docs/` must increase the package
+version in `Cargo.toml` and update `Cargo.lock`.
+
+To publish, push a `vMAJOR.MINOR.PATCH` tag that matches the version in
+`Cargo.toml`. The [release workflow](.github/workflows/release.yml) builds
+the Windows x64 installer and attaches it to the GitHub release as
+`ai-allowance-windows-x64-setup.exe`.
 
 The tray icon is the Aven Solutions starburst favicon; see
 [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md) for provenance. The icon is

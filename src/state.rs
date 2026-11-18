@@ -110,33 +110,32 @@ impl QuotaWindow {
         }
     }
 
-    /// Traffic-light pace. `expected` is the share of the allowance that
-    /// would be left if it were used evenly across the window, and
-    /// `slack_days = (left - expected) / 15`, where 15 percentage points is
-    /// about one day of a weekly window. Other window lengths scale that day
-    /// unit by `7 days / window length`. None when left, reset or window
-    /// length is unknown.
+    /// Project usage at reset from the average rate in the current window.
     pub fn pace(&self, now: DateTime<Utc>) -> Option<Pace> {
         let left = self.remaining_percent()?;
         let window = self.window_secs.filter(|s| *s > 0)?;
-        let until_reset = (self.resets_at? - now).num_seconds().clamp(0, window);
-        let expected = 100.0 * until_reset as f64 / window as f64;
-        let day_points = 15.0 * WEEK_SECS as f64 / window as f64;
-        let slack_days = (left - expected) / day_points;
-        Some(if slack_days >= 0.0 {
-            Pace::Green
-        } else if slack_days >= -1.0 {
+        let reset = self.resets_at?;
+        if reset <= now {
+            return None;
+        }
+        let until_reset = (reset - now).num_seconds().min(window);
+        // Avoid overreacting to a tiny sample right after reset.
+        let elapsed = ((window - until_reset) as f64 / window as f64).max(0.10);
+        let used = 100.0 - left;
+        Some(if left == 0.0 || used > 100.0 * elapsed {
+            Pace::Red
+        } else if used >= 90.0 * elapsed {
             Pace::Yellow
         } else {
-            Pace::Red
+            Pace::Green
         })
     }
 }
 
 pub const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// Whether usage is on plan (green), up to a day behind (yellow) or more
-/// than a day behind (red).
+/// Green below 90% projected use, yellow from 90% to 100%, red above
+/// 100% or when the allowance is already exhausted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pace {
     Green,
@@ -488,31 +487,49 @@ mod tests {
     }
 
     #[test]
-    fn pace_compares_left_with_even_use_across_the_window() {
+    fn pace_warns_near_the_projected_cap_and_turns_red_above_it() {
         let now = t("2026-11-16T00:00:00Z");
-        let mut w = QuotaWindow::new("claude:overall", "Claude");
+        let mut w = QuotaWindow::new("codex:codex:primary", "Work/Codex");
         w.window_secs = Some(WEEK_SECS);
-        // Three days into a week: 4/7 (57.1%) should be left.
-        w.resets_at = Some(now + chrono::Duration::days(4));
-        let pace = |w: &mut QuotaWindow, left: f64| {
-            w.used_percent = Some(100.0 - left);
-            w.pace(now)
-        };
-        assert_eq!(pace(&mut w, 57.2), Some(Pace::Green));
-        assert_eq!(pace(&mut w, 50.0), Some(Pace::Yellow));
-        assert_eq!(pace(&mut w, 42.2), Some(Pace::Yellow));
-        assert_eq!(pace(&mut w, 42.0), Some(Pace::Red));
-        // A 30-day window: one day behind is 3.5 points.
-        w.window_secs = Some(30 * 24 * 3600);
-        w.resets_at = Some(now + chrono::Duration::days(15));
-        assert_eq!(pace(&mut w, 47.0), Some(Pace::Yellow));
-        assert_eq!(pace(&mut w, 46.0), Some(Pace::Red));
-        // Unknown window length, reset or allowance has no light.
+        w.resets_at = Some(now + chrono::Duration::seconds(WEEK_SECS / 2));
+        for (used, expected) in [
+            (44.0, Pace::Green),
+            (45.0, Pace::Yellow),
+            (50.0, Pace::Yellow),
+            (51.0, Pace::Red),
+        ] {
+            w.used_percent = Some(used);
+            assert_eq!(w.pace(now), Some(expected), "{used}% used halfway through");
+        }
+        w.used_percent = Some(10.0);
+        w.resets_at = Some(now + chrono::Duration::days(1));
+        assert_eq!(w.pace(now), Some(Pace::Green));
+    }
+
+    #[test]
+    fn pace_handles_fresh_and_ended_windows() {
+        let now = t("2026-11-16T00:00:00Z");
+        let mut w = QuotaWindow::new("codex:codex:primary", "Work/Codex");
+        w.window_secs = Some(WEEK_SECS);
+        let reset = now + chrono::Duration::seconds(WEEK_SECS - 60);
+        w.resets_at = Some(reset);
+        w.used_percent = Some(1.0);
+        assert_eq!(
+            format_window_row(&w, now, false).as_deref(),
+            Some("Work/Codex: 99% left | 6d")
+        );
+        assert_eq!(w.pace(now), Some(Pace::Green));
+        w.used_percent = Some(100.0);
+        assert_eq!(w.pace(now), Some(Pace::Red));
+        assert_eq!(w.pace(reset), None);
         w.window_secs = None;
-        assert_eq!(pace(&mut w, 90.0), None);
+        assert_eq!(w.pace(now), None);
         w.window_secs = Some(WEEK_SECS);
         w.resets_at = None;
-        assert_eq!(pace(&mut w, 90.0), None);
+        assert_eq!(w.pace(now), None);
+        w.resets_at = Some(reset);
+        w.used_percent = None;
+        assert_eq!(w.pace(now), None);
     }
 
     #[test]

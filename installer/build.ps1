@@ -20,7 +20,7 @@ try {
     New-Item -ItemType Directory -Force target\installer | Out-Null
     & $compiler.Source /V3 /WX "/DVERSION=$version" installer\ai-allowance.nsi
     if ($LASTEXITCODE -ne 0) { throw 'NSIS compilation failed.' }
-    Write-Output "Installer: $(Join-Path $root "target\installer\ai-allowance-$version-windows-x64-setup.exe")"
+    Write-Output "Installer: $(Join-Path $root 'target\installer\ai-allowance-windows-x64-setup.exe')"
 }
 finally {
     Pop-Location

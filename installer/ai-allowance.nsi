@@ -11,7 +11,7 @@ SetCompressor /SOLID lzma
 !error "Pass /DVERSION=<Cargo package version>."
 !endif
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "..\target\installer\ai-allowance-${VERSION}-windows-x64-setup.exe"
+!define OUTPUT_FILE "..\target\installer\ai-allowance-windows-x64-setup.exe"
 !endif
 
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
