@@ -79,7 +79,7 @@ validated live, using an explicitly experimental interface (see
 ## Requirements
 
 - Windows 11 x64.
-- Rust stable 1.85+ (tested with 1.97.1) to build.
+- Rust stable 1.85+ (tested with 1.100.0) to build. See [Build](#build).
 - For Claude: Node.js 23.6+ on PATH and an existing Claude Code sign-in.
 - For Work/Codex: a codex CLI (`codex` on PATH, the binary bundled with the
   ChatGPT VS Code extension is found automatically, or set
@@ -87,9 +87,22 @@ validated live, using an explicitly experimental interface (see
 - For Copilot: GitHub CLI (`gh`) on PATH, signed in using `gh auth login`,
   or set `providers.copilot.command` to its executable.
 
-## Build and run
+## Build
 
-```text
+Builds need Rust stable 1.85 or later, installed with rustup. If an older
+standalone Rust install is also on PATH, put `%USERPROFILE%\.cargo\bin`
+first; `cargo --version` must report 1.85 or later. The installer also needs
+NSIS 3:
+
+```powershell
+winget install --id NSIS.NSIS -e
+```
+
+Run the commands below in PowerShell from the repository root.
+
+### Run from source
+
+```powershell
 cargo build --release
 npm install --prefix helpers/claude-usage
 target\release\ai-allowance.exe
@@ -98,41 +111,99 @@ target\release\ai-allowance.exe
 The helper install is only needed for the Claude provider. When the app runs
 from a different directory, copy `helpers\claude-usage` (with its
 `node_modules`) next to the executable or set `providers.claude.helper_dir`.
+Only one copy of the app runs at a time, so quit an installed copy first.
 
-Run the tests (synthetic fixtures only, no credentials needed):
+Run the same checks as CI (synthetic fixtures only, no credentials needed):
 
-```text
+```powershell
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
-## Windows installer
+### Build the installer locally
 
-With NSIS 3 installed, build the release executable first, then package it
-into the per-user Windows x64 installer in PowerShell:
+Build the release executable, then package it into the per-user Windows x64
+installer:
 
 ```powershell
 cargo rustc --release --locked --target-dir target\installer-build --bin ai-allowance -- -C target-feature=+crt-static
-.\installer\build.ps1
-# If NSIS is not on PATH:
+.\target\installer-build\release\ai-allowance.exe --version
 .\installer\build.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 ```
 
-The packaging script uses the prebuilt executable without compiling it or
-restoring provider dependencies. The release build above statically links
-the Visual C++ runtime, avoiding a machine-wide runtime installation.
-Output: `target\installer\ai-allowance-windows-x64-setup.exe`.
-The installer is currently unsigned. The filename stays the same across
-versions; the installer still embeds the package version.
+`-MakeNsis` can be left out when `makensis` is on PATH. The release build
+statically links the Visual C++ runtime, avoiding a machine-wide runtime
+installation. The packaging script uses only that prebuilt executable
+(`target\installer-build\release`, not `target\release`), without compiling
+it or restoring provider dependencies, and embeds the version from
+`Cargo.toml`. Output: `target\installer\ai-allowance-windows-x64-setup.exe`.
+The filename stays the same across versions. The installer is currently
+unsigned, so SmartScreen may warn before it runs.
 
-After building, run installer smoke tests with `.\installer\test.ps1`
-(the same `-MakeNsis` option is supported). Tests redirect registry paths,
-shortcuts and files to isolated current-user test locations. They verify
-startup defaults, quoting, preservation of unrelated values and preferences,
-running-instance protection, and uninstall with startup enabled or disabled.
-Interactive wizard appearance and an actual Windows sign-in remain manual
-checks.
+Then run the installer smoke tests:
+
+```powershell
+.\installer\test.ps1 -MakeNsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+```
+
+Tests redirect registry paths, shortcuts and files to isolated current-user
+test locations. They verify startup defaults, quoting, preservation of
+unrelated values and preferences, running-instance protection, and uninstall
+with startup enabled or disabled. Interactive wizard appearance and an
+actual Windows sign-in remain manual checks.
+
+To upgrade an installed copy, choose Quit from the tray menu, then run the
+new setup. Setup will not continue while the app is running.
+
+### Build in CI
+
+[CI](.github/workflows/ci.yml) runs on Windows with current Rust stable for
+every push and pull request to `main`:
+
+1. Changes to Rust (`.rs`) files outside `.github/` and `docs/` must increase
+   the version in `Cargo.toml` and update `Cargo.lock` (`cargo build` does
+   this after the version is edited).
+2. Format check, Clippy and tests.
+3. Release executable, installer and installer smoke tests, using the same
+   commands as the local build.
+4. The installer is uploaded as the `ai-allowance-windows-x64-installer`
+   workflow artifact.
+
+To download the installer built for a commit:
+
+```powershell
+gh run list --workflow CI --limit 5
+gh run download <run-id> --name ai-allowance-windows-x64-installer
+```
+
+### Publish a release
+
+Releases are built by the [release workflow](.github/workflows/release.yml)
+when a `vMAJOR.MINOR.PATCH` tag is pushed. Replace `X.Y.Z` below with the
+version in `Cargo.toml`.
+
+1. Commit the version change and push it to `main`.
+2. Wait for CI to pass on that commit (`gh run watch`). The release workflow
+   does not run the tests again.
+3. Tag that commit and push the tag:
+
+   ```powershell
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+4. The workflow checks that the tag matches the `Cargo.toml` version, builds
+   the executable and installer as above, and creates the GitHub release with
+   `ai-allowance-windows-x64-setup.exe` attached and generated release
+   notes. Check it with `gh run watch` and `gh release view vX.Y.Z`.
+
+If the release workflow fails, fix the cause, delete the tag
+(`git push --delete origin vX.Y.Z`, then `git tag -d vX.Y.Z`) and any
+partly created release (`gh release delete vX.Y.Z`), and tag the fixed
+commit again.
+
+## Windows installer
 
 Setup installs into `%LOCALAPPDATA%\Programs\AI Allowance` without elevation.
 It extracts the tray executable, uninstaller, license and README, then adds
@@ -258,16 +329,8 @@ Chrome must already have the desired accounts signed into those profiles.
 Read [AGENTS.md](AGENTS.md) before making changes. Provider adapters live in
 `src/providers/` and are independent of the tray UI (`src/tray.rs`,
 Windows-only). Parsing is tested against synthetic fixtures in
-`tests/fixtures/`. [CI](.github/workflows/ci.yml) runs formatting, Clippy,
-unit tests, and installer smoke tests on Windows for pushes and pull
-requests to `main`. No live credentials are needed. Changes to Rust
-(`.rs`) files outside `.github/` and `docs/` must increase the package
-version in `Cargo.toml` and update `Cargo.lock`.
-
-To publish, push a `vMAJOR.MINOR.PATCH` tag that matches the version in
-`Cargo.toml`. The [release workflow](.github/workflows/release.yml) builds
-the Windows x64 installer and attaches it to the GitHub release as
-`ai-allowance-windows-x64-setup.exe`.
+`tests/fixtures/`, so no live credentials are needed. See [Build](#build)
+for local and CI builds, the version bump rule and releases.
 
 The tray icon is the Aven Solutions starburst favicon; see
 [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md) for provenance. The icon is

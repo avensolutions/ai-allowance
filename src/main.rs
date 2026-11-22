@@ -98,6 +98,11 @@ mod app {
 
     /// Tooltip countdowns update locally on this cadence without any network.
     const TICK: Duration = Duration::from_secs(30);
+    /// How long Quit waits for in-flight fetches to stop. Dropping the runtime
+    /// instead would wait without limit for a helper pipe read, which tokio
+    /// runs on a blocking thread on Windows, and keep the app (and its
+    /// single-instance lock, which blocks upgrades) alive.
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
     pub enum UserEvent {
         Tray(TrayIconEvent),
@@ -121,7 +126,7 @@ mod app {
         alerts: AlertEngine,
         autostart: Option<bool>,
         proxy: EventLoopProxy<UserEvent>,
-        runtime: tokio::runtime::Runtime,
+        runtime: tokio::runtime::Handle,
         last_poll: Option<Instant>,
         generations: HashMap<ProviderKind, u64>,
         fetches: HashMap<ProviderKind, tokio::task::JoinHandle<()>>,
@@ -364,11 +369,12 @@ mod app {
             alerts: AlertEngine::default(),
             autostart,
             proxy,
-            runtime,
+            runtime: runtime.handle().clone(),
             last_poll: None,
             generations: HashMap::new(),
             fetches: HashMap::new(),
         };
+        let mut runtime = Some(runtime);
 
         app.initialize_disabled();
         if app.autostart == Some(true) {
@@ -509,6 +515,11 @@ mod app {
                     dialogs.close_all();
                     // Remove the tray icon on shutdown.
                     tray.take();
+                    // Cancelling the fetches drops their helper processes,
+                    // which are spawned with kill_on_drop.
+                    if let Some(runtime) = runtime.take() {
+                        runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
+                    }
                 }
                 _ => {}
             }
