@@ -32,7 +32,9 @@ validated live, using an explicitly experimental interface (see
   a centered native usage window with Claude, ChatGPT and GitHub Copilot
   cards with original provider logos and separate slim allowance-left bars
   for each available window. Unknown allowances show usage text instead of
-  a misleading bar.
+  a misleading bar. The Refresh button (or F5) refreshes every enabled
+  provider on demand, and each card shows "Refreshing" until its provider
+  responds.
 - Dialog type follows Claude's settings dialog: 14px body text, 12px
   captions and 15px semibold headings. Claude's own typeface is proprietary
   and is not bundled; the app uses Segoe UI, Claude's Windows fallback.

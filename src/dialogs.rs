@@ -21,6 +21,7 @@ use crate::state::{format_countdown, format_window_value, AppState, ProviderKind
 const CLASS: &str = "AIAllowance.Dialog";
 const SAVE: usize = 1;
 const CANCEL: usize = 2;
+const REFRESH: usize = 3;
 const PAGE_GENERAL: usize = 10;
 const PAGE_PROVIDERS: usize = 11;
 const PAGE_BROWSER: usize = 12;
@@ -57,6 +58,7 @@ const BAR: COLORREF = rgb(106, 171, 241);
 const TRACK: COLORREF = rgb(228, 239, 251);
 const INPUT_BORDER: COLORREF = rgb(214, 214, 210);
 const INPUT_FOCUS: COLORREF = rgb(54, 125, 222);
+const USAGE_BACKGROUND: COLORREF = rgb(248, 249, 251);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Browse {
@@ -175,6 +177,17 @@ impl Dialogs {
             let mut class = [0u16; 64];
             let len = GetClassNameW(root, class.as_mut_ptr(), class.len() as i32);
             if len > 0 && String::from_utf16_lossy(&class[..len as usize]) == CLASS {
+                // Send the usage window's keys to the window itself, wherever
+                // focus is, so the focused Refresh button cannot swallow them.
+                let usage = GetWindowLongPtrW(root, GWLP_USERDATA) as *const WindowData;
+                if (*msg).message == WM_KEYDOWN
+                    && usage_key((*msg).wParam as u16).is_some()
+                    && !usage.is_null()
+                    && (*usage).config.is_none()
+                {
+                    SendMessageW(root, WM_KEYDOWN, (*msg).wParam, (*msg).lParam);
+                    return true;
+                }
                 return IsDialogMessageW(root, msg) != 0;
             }
         }
@@ -204,19 +217,25 @@ impl Dialogs {
         finish_build(hwnd, result)
     }
 
-    pub fn usage(&self, state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
+    /// `refreshing` lists the providers with a fetch in flight.
+    pub fn usage(
+        &self,
+        state: &AppState,
+        refreshing: &[ProviderKind],
+        proxy: EventLoopProxy<UserEvent>,
+    ) -> Result<(), String> {
         if focus_existing(self.usage.get()) {
             return Ok(());
         }
         let hwnd = create_window("AI Allowance Usage", self.usage.clone(), None, proxy, 700)?;
-        let result = unsafe { data(hwnd).build_usage(hwnd, state) };
+        let result = unsafe { data(hwnd).build_usage(hwnd, state, refreshing) };
         finish_build(hwnd, result)
     }
 
-    pub fn update_usage(&self, state: &AppState) {
+    pub fn update_usage(&self, state: &AppState, refreshing: &[ProviderKind]) {
         let hwnd = self.usage.get();
         if !hwnd.is_null() {
-            let result = unsafe { data(hwnd).build_usage(hwnd, state) };
+            let result = unsafe { data(hwnd).build_usage(hwnd, state, refreshing) };
             if let Err(e) = result {
                 show_error(&e);
                 unsafe {
@@ -1005,7 +1024,19 @@ impl WindowData {
         Ok(())
     }
 
-    fn build_usage(&mut self, hwnd: HWND, state: &AppState) -> Result<(), String> {
+    fn build_usage(
+        &mut self,
+        hwnd: HWND,
+        state: &AppState,
+        refreshing: &[ProviderKind],
+    ) -> Result<(), String> {
+        // Keep the Refresh button across rebuilds so it keeps keyboard focus
+        // and any click in progress; only its position changes.
+        let refresh = self
+            .controls
+            .iter()
+            .position(|c| unsafe { GetDlgCtrlID(c.hwnd) } == REFRESH as i32)
+            .map(|index| self.controls.remove(index));
         for c in self.controls.drain(..) {
             unsafe {
                 DestroyWindow(c.hwnd);
@@ -1105,16 +1136,12 @@ impl WindowData {
                     y += 6;
                 }
                 if let Some(at) = snap.collected_at {
-                    self.usage_text(
-                        hwnd,
-                        &format!("Updated {}", at.with_timezone(&Local).format("%H:%M")),
-                        34,
-                        y,
-                        520,
-                        18,
-                        self.small_font,
-                        true,
-                    )?;
+                    let mut updated =
+                        format!("Updated {}", at.with_timezone(&Local).format("%H:%M"));
+                    if refreshing.contains(&kind) {
+                        updated.push_str("  |  Refreshing");
+                    }
+                    self.usage_text(hwnd, &updated, 34, y, 520, 18, self.small_font, true)?;
                     y += 18;
                 }
             } else {
@@ -1133,14 +1160,33 @@ impl WindowData {
             hwnd,
             "Bars show allowance left. Double-click the tray to reopen.",
             24,
-            y,
-            540,
+            y + 6,
+            430,
             20,
             self.small_font,
             true,
         )?;
-        self.controls.last_mut().expect("footer").background = rgb(248, 249, 251);
-        self.content_height = y + 34;
+        self.controls.last_mut().expect("footer").background = USAGE_BACKGROUND;
+        // Right-aligned with the cards' right edge.
+        if let Some(mut button) = refresh {
+            button.y = y;
+            self.controls.push(button);
+        } else {
+            self.control(
+                hwnd,
+                "BUTTON",
+                "Refresh",
+                REFRESH,
+                WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+                0,
+                476,
+                y,
+                100,
+                EDIT_HEIGHT,
+            )?;
+            self.controls.last_mut().expect("refresh").background = USAGE_BACKGROUND;
+        }
+        self.content_height = y + EDIT_HEIGHT + 14;
         self.layout_scroll(hwnd);
         Ok(())
     }
@@ -1171,7 +1217,7 @@ impl WindowData {
         let background = CreateSolidBrush(if self.config.is_some() {
             rgb(255, 255, 255)
         } else {
-            rgb(248, 249, 251)
+            USAGE_BACKGROUND
         });
         FillRect(dc, &rect, background);
         DeleteObject(background);
@@ -1403,6 +1449,24 @@ unsafe fn browse(hwnd: HWND, id: usize, kind: Browse) -> Result<(), String> {
     Ok(())
 }
 
+enum UsageKey {
+    Scroll(SCROLLBAR_COMMAND),
+    Refresh,
+}
+
+fn usage_key(vk: u16) -> Option<UsageKey> {
+    Some(match vk {
+        VK_UP => UsageKey::Scroll(SB_LINEUP),
+        VK_DOWN => UsageKey::Scroll(SB_LINEDOWN),
+        VK_PRIOR => UsageKey::Scroll(SB_PAGEUP),
+        VK_NEXT => UsageKey::Scroll(SB_PAGEDOWN),
+        VK_HOME => UsageKey::Scroll(SB_TOP),
+        VK_END => UsageKey::Scroll(SB_BOTTOM),
+        VK_F5 => UsageKey::Refresh,
+        _ => return None,
+    })
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -1476,6 +1540,11 @@ unsafe extern "system" fn window_proc(
                 CANCEL => {
                     DestroyWindow(hwnd);
                 }
+                // The event loop starts the fetches and rebuilds this window;
+                // a send error only means the app is shutting down.
+                REFRESH if (*ptr).config.is_none() => {
+                    let _ = (*ptr).proxy.send_event(UserEvent::RefreshRequested);
+                }
                 SAVE if (*ptr).config.is_some() => match (*ptr).save(hwnd) {
                     Ok(()) => {
                         DestroyWindow(hwnd);
@@ -1532,23 +1601,17 @@ unsafe extern "system" fn window_proc(
             (*ptr).layout_scroll(hwnd);
             0
         }
-        WM_KEYDOWN if (*ptr).config.is_none() => {
-            let command = match wparam as u16 {
-                VK_UP => Some(SB_LINEUP),
-                VK_DOWN => Some(SB_LINEDOWN),
-                VK_PRIOR => Some(SB_PAGEUP),
-                VK_NEXT => Some(SB_PAGEDOWN),
-                VK_HOME => Some(SB_TOP),
-                VK_END => Some(SB_BOTTOM),
-                _ => None,
-            };
-            if let Some(command) = command {
+        WM_KEYDOWN if (*ptr).config.is_none() => match usage_key(wparam as u16) {
+            Some(UsageKey::Scroll(command)) => {
                 SendMessageW(hwnd, WM_VSCROLL, command as usize, 0);
                 0
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-        }
+            Some(UsageKey::Refresh) => {
+                SendMessageW(hwnd, WM_COMMAND, REFRESH, 0);
+                0
+            }
+            None => DefWindowProcW(hwnd, msg, wparam, lparam),
+        },
         WM_CLOSE => {
             DestroyWindow(hwnd);
             0
@@ -1578,13 +1641,16 @@ pub fn initialize() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::state::{FetchOutcome, QuotaWindow};
-    use tao::event_loop::EventLoopBuilder;
+    use std::time::{Duration, Instant};
+    use tao::event::Event;
+    use tao::event_loop::{ControlFlow, EventLoopBuilder};
+    use tao::platform::run_return::EventLoopExtRunReturn;
     use tao::platform::windows::EventLoopBuilderExtWindows;
 
     #[test]
     fn native_settings_and_usage_controls_preserve_values_and_missing_data() {
         initialize().unwrap();
-        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
+        let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
             .with_any_thread(true)
             .build();
         let dialogs = Dialogs::default();
@@ -1681,15 +1747,18 @@ mod tests {
             640,
         )
         .unwrap();
+        unsafe fn control_texts(hwnd: HWND) -> Vec<String> {
+            data(hwnd)
+                .controls
+                .iter()
+                .map(|c| window_text(c.hwnd))
+                .collect()
+        }
         unsafe {
-            data(usage).build_usage(usage, &state).unwrap();
+            data(usage).build_usage(usage, &state, &[]).unwrap();
             let positions: Vec<_> = data(usage).bars.iter().map(|b| b.left).collect();
-            let mut labels = Vec::new();
-            for c in &data(usage).controls {
-                let mut text = [0u16; 512];
-                let len = GetWindowTextW(c.hwnd, text.as_mut_ptr(), text.len() as i32);
-                labels.push(String::from_utf16_lossy(&text[..len as usize]));
-            }
+            let labels = control_texts(usage);
+            assert!(!labels.iter().any(|label| label.contains("Refreshing")));
             assert_eq!(positions, [75.0, 40.0]);
             assert_eq!(data(usage).cards.len(), 3);
             for title in [
@@ -1719,7 +1788,7 @@ mod tests {
             );
             SelectObject(dc, old_font);
             for _ in 0..2 {
-                data(usage).build_usage(usage, &state).unwrap();
+                data(usage).build_usage(usage, &state, &[]).unwrap();
                 SendMessageW(usage, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
                 assert_eq!(GetPixel(dc, 0, 0), rgb(248, 249, 251));
                 let d = data(usage);
@@ -1749,6 +1818,58 @@ mod tests {
             GetWindowRect(usage, &mut rect);
             assert!(((rect.left + rect.right) - (work.left + work.right)).abs() <= 1);
             assert!(((rect.top + rect.bottom) - (work.top + work.bottom)).abs() <= 1);
+
+            // Refresh survives rebuilds; only providers in flight are marked.
+            let button = GetDlgItem(usage, REFRESH as i32);
+            assert!(!button.is_null());
+            data(usage)
+                .build_usage(usage, &state, &[ProviderKind::Claude])
+                .unwrap();
+            assert_eq!(GetDlgItem(usage, REFRESH as i32), button);
+            let marked: Vec<_> = control_texts(usage)
+                .into_iter()
+                .filter(|label| label.contains("Refreshing"))
+                .collect();
+            assert_eq!(marked.len(), 1, "only Claude is in flight: {marked:?}");
+            assert!(marked[0].starts_with("Updated ") && marked[0].ends_with("|  Refreshing"));
+
+            // With Refresh focused, scroll keys and F5 still reach the window.
+            SetWindowPos(
+                usage,
+                std::ptr::null_mut(),
+                0,
+                0,
+                rect.right - rect.left,
+                data(usage).px(300),
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            data(usage).build_usage(usage, &state, &[]).unwrap();
+            assert_eq!(data(usage).scroll, 0);
+            for vk in [VK_END, VK_F5] {
+                let key = MSG {
+                    hwnd: button,
+                    message: WM_KEYDOWN,
+                    wParam: vk as usize,
+                    ..Default::default()
+                };
+                assert!(Dialogs::process_message((&key as *const MSG).cast()));
+            }
+            assert!(data(usage).scroll > 0);
+            SendMessageW(usage, WM_COMMAND, REFRESH, button as isize);
+            let mut requested = 0;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            event_loop.run_return(|event, _, control_flow| {
+                if let Event::UserEvent(UserEvent::RefreshRequested) = event {
+                    requested += 1;
+                }
+                *control_flow = if requested == 2 || Instant::now() >= deadline {
+                    ControlFlow::Exit
+                } else {
+                    ControlFlow::WaitUntil(deadline)
+                };
+            });
+            assert_eq!(requested, 2, "F5 and the button each request a refresh");
+
             SendMessageW(usage, WM_VSCROLL, SB_BOTTOM as usize, 0);
             SendMessageW(usage, WM_COMMAND, CANCEL, 0);
             assert!(dialogs.usage.get().is_null());

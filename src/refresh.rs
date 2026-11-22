@@ -28,6 +28,10 @@ impl RefreshCoordinator {
         self.consecutive_failures.remove(&provider);
     }
 
+    pub fn is_in_flight(&self, provider: ProviderKind) -> bool {
+        self.in_flight.contains(&provider)
+    }
+
     /// Begin a fetch when data is older than `max_age_secs`, the provider is
     /// not already in flight and no backoff applies. Returns true when the
     /// caller should spawn the fetch.

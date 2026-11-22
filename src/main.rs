@@ -110,6 +110,8 @@ mod app {
         SettingsSaved {
             config: Box<Config>,
         },
+        /// The usage window's Refresh button or F5.
+        RefreshRequested,
     }
 
     struct App {
@@ -150,6 +152,13 @@ mod app {
                 v.push(ProviderKind::Copilot);
             }
             v
+        }
+
+        fn refreshing(&self) -> Vec<ProviderKind> {
+            ProviderKind::ALL
+                .into_iter()
+                .filter(|kind| self.coordinator.is_in_flight(*kind))
+                .collect()
         }
 
         fn spawn_fetch(&mut self, kind: ProviderKind) {
@@ -394,7 +403,7 @@ mod app {
                     if let Some(t) = &mut tray {
                         t.update(&app.state, &app.config, app.autostart);
                     }
-                    dialogs.update_usage(&app.state);
+                    dialogs.update_usage(&app.state, &app.refreshing());
                 }
                 Event::UserEvent(UserEvent::Tray(tray_event)) => {
                     if let Some(t) = &mut tray {
@@ -408,7 +417,9 @@ mod app {
                         }
                     ) {
                         app.refresh_stale(HOVER_MAX_AGE_SECS);
-                        if let Err(e) = dialogs.usage(&app.state, app.proxy.clone()) {
+                        if let Err(e) =
+                            dialogs.usage(&app.state, &app.refreshing(), app.proxy.clone())
+                        {
                             dialogs::show_error(&e);
                         }
                     }
@@ -463,7 +474,7 @@ mod app {
                     if let Some(t) = &mut tray {
                         t.update(&app.state, &app.config, app.autostart);
                     }
-                    dialogs.update_usage(&app.state);
+                    dialogs.update_usage(&app.state, &app.refreshing());
                 }
                 Event::UserEvent(UserEvent::Fetched {
                     kind,
@@ -478,14 +489,21 @@ mod app {
                     if let Some(t) = &mut tray {
                         t.update(&app.state, &app.config, app.autostart);
                     }
-                    dialogs.update_usage(&app.state);
+                    dialogs.update_usage(&app.state, &app.refreshing());
                 }
                 Event::UserEvent(UserEvent::SettingsSaved { config }) => {
                     app.apply_settings(*config);
                     if let Some(t) = &mut tray {
                         t.update(&app.state, &app.config, app.autostart);
                     }
-                    dialogs.update_usage(&app.state);
+                    dialogs.update_usage(&app.state, &app.refreshing());
+                }
+                Event::UserEvent(UserEvent::RefreshRequested) => {
+                    app.refresh_forced();
+                    if let Some(t) = &mut tray {
+                        t.update(&app.state, &app.config, app.autostart);
+                    }
+                    dialogs.update_usage(&app.state, &app.refreshing());
                 }
                 Event::LoopDestroyed => {
                     dialogs.close_all();
