@@ -29,6 +29,7 @@ VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "AI Allowance"
 VIAddVersionKey /LANG=1033 "FileDescription" "AI Allowance per-user installer"
 VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=1033 "CompanyName" "Aven Solutions AI"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "AIAllowance contributors"
 
 !define MUI_ABORTWARNING
@@ -97,7 +98,7 @@ Section "AI Allowance (required)" AppSection
     CreateShortcut "${START_MENU}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "AI Allowance"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
-    WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Aven Solutions"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Aven Solutions AI"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$\"$INSTDIR\ai-allowance.exe$\""
     WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""

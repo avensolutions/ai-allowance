@@ -48,6 +48,13 @@ const MAX_TOOLTIP_CHECKS: usize = 12;
 const SS_CENTERIMAGE: u32 = 0x200;
 const SETTINGS_HEIGHT: i32 = 640;
 const SETTINGS_WIDTH: i32 = 760;
+const ABOUT_HEIGHT: i32 = 250;
+const ABOUT_WIDTH: i32 = 440;
+const ABOUT_ICON: i32 = 48;
+/// Set by build.rs, which also writes it to the executable's CompanyName.
+const PUBLISHER: &str = env!("AIALLOWANCE_PUBLISHER");
+/// Unix seconds when build.rs ran for this build (or `SOURCE_DATE_EPOCH`).
+const BUILD_TIME: &str = env!("AIALLOWANCE_BUILD_TIME");
 
 // Claude's settings dialog uses 14px body text, 12px captions and 15px
 // semibold headings. Its anthropic-sans face is proprietary, so this uses
@@ -95,6 +102,14 @@ pub fn show_error(message: &str) {
 pub struct Dialogs {
     settings: Rc<Cell<HWND>>,
     usage: Rc<Cell<HWND>>,
+    about: Rc<Cell<HWND>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Settings,
+    Usage,
+    About,
 }
 
 struct Control {
@@ -136,6 +151,7 @@ struct FieldBox {
 
 struct WindowData {
     owner: Rc<Cell<HWND>>,
+    kind: Kind,
     config: Option<Config>,
     proxy: EventLoopProxy<UserEvent>,
     controls: Vec<Control>,
@@ -144,6 +160,8 @@ struct WindowData {
     small_font: HFONT,
     line_height: i32,
     logos: [HICON; 3],
+    /// The application icon, drawn only in the About window.
+    app_icon: HICON,
     cards: Vec<ProviderCard>,
     bars: Vec<UsageBar>,
     fields: Vec<FieldBox>,
@@ -164,6 +182,9 @@ impl Drop for WindowData {
             for icon in self.logos {
                 DestroyIcon(icon);
             }
+            if !self.app_icon.is_null() {
+                DestroyIcon(self.app_icon);
+            }
         }
     }
 }
@@ -183,7 +204,7 @@ impl Dialogs {
                 if (*msg).message == WM_KEYDOWN
                     && usage_key((*msg).wParam as u16).is_some()
                     && !usage.is_null()
-                    && (*usage).config.is_none()
+                    && (*usage).kind == Kind::Usage
                 {
                     SendMessageW(root, WM_KEYDOWN, (*msg).wParam, (*msg).lParam);
                     return true;
@@ -206,6 +227,7 @@ impl Dialogs {
         let hwnd = create_window(
             "AI Allowance Settings",
             self.settings.clone(),
+            Kind::Settings,
             Some(cfg.clone()),
             proxy,
             SETTINGS_HEIGHT,
@@ -227,8 +249,31 @@ impl Dialogs {
         if focus_existing(self.usage.get()) {
             return Ok(());
         }
-        let hwnd = create_window("AI Allowance Usage", self.usage.clone(), None, proxy, 700)?;
+        let hwnd = create_window(
+            "AI Allowance Usage",
+            self.usage.clone(),
+            Kind::Usage,
+            None,
+            proxy,
+            700,
+        )?;
         let result = unsafe { data(hwnd).build_usage(hwnd, state, refreshing) };
+        finish_build(hwnd, result)
+    }
+
+    pub fn about(&self, proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
+        if focus_existing(self.about.get()) {
+            return Ok(());
+        }
+        let hwnd = create_window(
+            "About AI Allowance",
+            self.about.clone(),
+            Kind::About,
+            None,
+            proxy,
+            ABOUT_HEIGHT,
+        )?;
+        let result = unsafe { data(hwnd).build_about(hwnd) };
         finish_build(hwnd, result)
     }
 
@@ -246,7 +291,7 @@ impl Dialogs {
     }
 
     pub fn close_all(&self) {
-        for hwnd in [self.settings.get(), self.usage.get()] {
+        for hwnd in [self.settings.get(), self.usage.get(), self.about.get()] {
             if !hwnd.is_null() {
                 unsafe {
                     DestroyWindow(hwnd);
@@ -292,10 +337,16 @@ fn finish_build(hwnd: HWND, result: Result<(), String>) -> Result<(), String> {
 fn create_window(
     title: &str,
     owner: Rc<Cell<HWND>>,
+    kind: Kind,
     config: Option<Config>,
     proxy: EventLoopProxy<UserEvent>,
     height: i32,
 ) -> Result<HWND, String> {
+    let base_width = match kind {
+        Kind::Settings => SETTINGS_WIDTH,
+        Kind::Usage => 620,
+        Kind::About => ABOUT_WIDTH,
+    };
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let class = wide(CLASS);
@@ -343,12 +394,13 @@ fn create_window(
         if !dc.is_null() {
             ReleaseDC(std::ptr::null_mut(), dc);
         }
-        let scale = if config.is_some() {
+        // Only the usage window scrolls; the others must fit the work area.
+        let scale = if kind == Kind::Usage {
             scale
-                .min((work.bottom - work.top - 20) as f64 / height as f64)
-                .min((work.right - work.left - 20) as f64 / SETTINGS_WIDTH as f64)
         } else {
             scale
+                .min((work.bottom - work.top - 20) as f64 / height as f64)
+                .min((work.right - work.left - 20) as f64 / base_width as f64)
         };
         let make_font = |size: f64, weight: i32| {
             CreateFontW(
@@ -402,9 +454,9 @@ fn create_window(
             return Err("Could not load native dialog fonts or provider icons.".into());
         }
         let line_height = text_height(font);
-        let settings = config.is_some();
         let boxed = Box::new(WindowData {
             owner,
+            kind,
             config,
             proxy,
             controls: Vec::new(),
@@ -413,6 +465,7 @@ fn create_window(
             small_font,
             line_height,
             logos,
+            app_icon: std::ptr::null_mut(),
             cards: Vec::new(),
             bars: Vec::new(),
             fields: Vec::new(),
@@ -422,12 +475,7 @@ fn create_window(
             scroll: 0,
             content_height: height,
         });
-        let width = ((if settings {
-            SETTINGS_WIDTH as f64
-        } else {
-            620.0
-        }) * scale)
-            .round() as i32;
+        let width = (base_width as f64 * scale).round() as i32;
         let height = ((height as f64 * scale).round() as i32).min(work.bottom - work.top - 20);
         let x = work.left + (work.right - work.left - width) / 2;
         let y = work.top + (work.bottom - work.top - height) / 2;
@@ -440,8 +488,11 @@ fn create_window(
                 | WS_CLIPCHILDREN
                 | WS_CAPTION
                 | WS_SYSMENU
-                | WS_MINIMIZEBOX
-                | if settings { 0 } else { WS_VSCROLL },
+                | match kind {
+                    Kind::Settings => WS_MINIMIZEBOX,
+                    Kind::Usage => WS_MINIMIZEBOX | WS_VSCROLL,
+                    Kind::About => 0,
+                },
             x,
             y,
             width,
@@ -1191,6 +1242,46 @@ impl WindowData {
         Ok(())
     }
 
+    fn build_about(&mut self, hwnd: HWND) -> Result<(), String> {
+        let size = self.px(ABOUT_ICON);
+        self.app_icon = unsafe {
+            LoadImageW(
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::without_provenance(1),
+                IMAGE_ICON,
+                size,
+                size,
+                LR_DEFAULTCOLOR,
+            ) as HICON
+        };
+        if self.app_icon.is_null() {
+            return Err("Could not load the application icon.".into());
+        }
+        let h = self.control(hwnd, "STATIC", "AI Allowance", 0, 0, 0, 88, 26, 320, 24)?;
+        unsafe {
+            SendMessageW(h, WM_SETFONT, self.heading_font as usize, 0);
+        }
+        for (index, (label, value)) in about_rows().into_iter().enumerate() {
+            let y = 62 + index as i32 * 26;
+            self.control(hwnd, "STATIC", label, 0, 0, 0, 88, y, 96, 22)?;
+            self.controls.last_mut().expect("about label").color = MUTED;
+            self.control(hwnd, "STATIC", &value, 0, 0, 0, 188, y, 220, 22)?;
+        }
+        self.control(
+            hwnd,
+            "BUTTON",
+            "Close",
+            CANCEL,
+            WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+            0,
+            308,
+            160,
+            100,
+            EDIT_HEIGHT,
+        )?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn usage_text(
         &mut self,
@@ -1214,13 +1305,27 @@ impl WindowData {
     unsafe fn paint(&self, hwnd: HWND, dc: HDC) {
         let mut rect = RECT::default();
         GetClientRect(hwnd, &mut rect);
-        let background = CreateSolidBrush(if self.config.is_some() {
-            rgb(255, 255, 255)
-        } else {
+        let background = CreateSolidBrush(if self.kind == Kind::Usage {
             USAGE_BACKGROUND
+        } else {
+            rgb(255, 255, 255)
         });
         FillRect(dc, &rect, background);
         DeleteObject(background);
+        if !self.app_icon.is_null() {
+            let size = self.px(ABOUT_ICON);
+            DrawIconEx(
+                dc,
+                self.px(24),
+                self.px(24),
+                self.app_icon,
+                size,
+                size,
+                0,
+                std::ptr::null_mut(),
+                DI_NORMAL,
+            );
+        }
         let focus = GetFocus();
         for field in self.fields.iter().filter(|f| f.page == self.page) {
             let r = field.rect;
@@ -1348,6 +1453,25 @@ unsafe fn rounded_rect(
     SelectObject(dc, old_brush);
     DeleteObject(pen);
     DeleteObject(brush);
+}
+
+/// The About window's label and value rows.
+fn about_rows() -> [(&'static str, String); 3] {
+    [
+        ("Version", env!("CARGO_PKG_VERSION").to_string()),
+        ("Build date", format_build_date(BUILD_TIME)),
+        ("Publisher", PUBLISHER.to_string()),
+    ]
+}
+
+/// Format Unix seconds as a local date, for example "23 Nov 2026".
+fn format_build_date(unix_secs: &str) -> String {
+    unix_secs
+        .parse()
+        .ok()
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .map(|t| t.with_timezone(&Local).format("%d %b %Y").to_string())
+        .unwrap_or_else(|| "Unknown".into())
 }
 
 fn path_text(path: Option<&std::path::Path>) -> String {
@@ -1512,7 +1636,7 @@ unsafe extern "system" fn window_proc(
             SetDCBrushColor(dc, rgb(255, 255, 255));
             GetStockObject(DC_BRUSH) as LRESULT
         }
-        WM_LBUTTONDOWN if (*ptr).config.is_some() => {
+        WM_LBUTTONDOWN if (*ptr).kind == Kind::Settings => {
             let point = POINT {
                 x: (lparam & 0xffff) as i16 as i32,
                 y: ((lparam >> 16) & 0xffff) as i16 as i32,
@@ -1542,10 +1666,10 @@ unsafe extern "system" fn window_proc(
                 }
                 // The event loop starts the fetches and rebuilds this window;
                 // a send error only means the app is shutting down.
-                REFRESH if (*ptr).config.is_none() => {
+                REFRESH if (*ptr).kind == Kind::Usage => {
                     let _ = (*ptr).proxy.send_event(UserEvent::RefreshRequested);
                 }
-                SAVE if (*ptr).config.is_some() => match (*ptr).save(hwnd) {
+                SAVE if (*ptr).kind == Kind::Settings => match (*ptr).save(hwnd) {
                     Ok(()) => {
                         DestroyWindow(hwnd);
                     }
@@ -1573,7 +1697,7 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
-        WM_VSCROLL if (*ptr).config.is_none() => {
+        WM_VSCROLL if (*ptr).kind == Kind::Usage => {
             let d = &mut *ptr;
             match (wparam & 0xffff) as i32 {
                 SB_LINEUP => d.scroll -= d.px(28),
@@ -1596,12 +1720,12 @@ unsafe extern "system" fn window_proc(
             d.layout_scroll(hwnd);
             0
         }
-        WM_MOUSEWHEEL if (*ptr).config.is_none() => {
+        WM_MOUSEWHEEL if (*ptr).kind == Kind::Usage => {
             (*ptr).scroll -= (*ptr).px((wparam >> 16) as i16 as i32 / 120 * 70);
             (*ptr).layout_scroll(hwnd);
             0
         }
-        WM_KEYDOWN if (*ptr).config.is_none() => match usage_key(wparam as u16) {
+        WM_KEYDOWN if (*ptr).kind == Kind::Usage => match usage_key(wparam as u16) {
             Some(UsageKey::Scroll(command)) => {
                 SendMessageW(hwnd, WM_VSCROLL, command as usize, 0);
                 0
@@ -1659,6 +1783,7 @@ mod tests {
         let settings = create_window(
             "Settings test",
             dialogs.settings.clone(),
+            Kind::Settings,
             Some(cfg.clone()),
             event_loop.create_proxy(),
             SETTINGS_HEIGHT,
@@ -1742,6 +1867,7 @@ mod tests {
         let usage = create_window(
             "Usage test",
             dialogs.usage.clone(),
+            Kind::Usage,
             None,
             event_loop.create_proxy(),
             640,
@@ -1879,6 +2005,7 @@ mod tests {
             let tooltip = create_window(
                 "Tooltip test",
                 Rc::new(Cell::new(std::ptr::null_mut())),
+                Kind::Settings,
                 Some(Config::default()),
                 event_loop.create_proxy(),
                 SETTINGS_HEIGHT,
@@ -1911,6 +2038,47 @@ mod tests {
             SendMessageW(row(1), BM_SETCHECK, 0, 0);
             assert!(data(tooltip).read_settings(tooltip).is_err());
             SendMessageW(tooltip, WM_COMMAND, CANCEL, 0);
+
+            let about = create_window(
+                "About test",
+                dialogs.about.clone(),
+                Kind::About,
+                None,
+                event_loop.create_proxy(),
+                ABOUT_HEIGHT,
+            )
+            .unwrap();
+            data(about).build_about(about).unwrap();
+            assert!(!data(about).app_icon.is_null());
+            let texts = control_texts(about);
+            for text in [
+                "Version",
+                env!("CARGO_PKG_VERSION"),
+                "Build date",
+                "Publisher",
+                PUBLISHER,
+            ] {
+                assert!(texts.iter().any(|t| t == text), "missing {text}");
+            }
+            // build.rs must emit a timestamp the app can read.
+            assert_ne!(format_build_date(BUILD_TIME), "Unknown");
+            let mut client = RECT::default();
+            GetClientRect(about, &mut client);
+            let d = data(about);
+            for c in &d.controls {
+                assert!(
+                    d.px(c.x + c.width) <= client.right && d.px(c.y + c.height) <= client.bottom,
+                    "about control outside client area"
+                );
+            }
+            SendMessageW(about, WM_COMMAND, CANCEL, 0);
+            assert!(dialogs.about.get().is_null());
         }
+    }
+
+    #[test]
+    fn unreadable_build_time_is_unknown() {
+        assert_eq!(format_build_date(""), "Unknown");
+        assert_eq!(format_build_date("not a number"), "Unknown");
     }
 }

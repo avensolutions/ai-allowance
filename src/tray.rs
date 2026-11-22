@@ -19,6 +19,7 @@ use crate::state::{format_window_value, tooltip_lines, AppState, ProviderKind, P
 pub const MENU_ID_REFRESH: &str = "refresh";
 pub const MENU_ID_SETTINGS: &str = "settings";
 pub const MENU_ID_AUTOSTART: &str = "autostart";
+pub const MENU_ID_ABOUT: &str = "about";
 pub const MENU_ID_QUIT: &str = "quit";
 pub const MENU_ID_OPEN_PREFIX: &str = "open:";
 
@@ -163,6 +164,13 @@ fn build_menu(state: &AppState, autostart: Option<bool>) -> Menu {
         "Start with Windows",
         autostart.is_some(),
         autostart.unwrap_or(false),
+        None,
+    ))
+    .ok();
+    menu.append(&MenuItem::with_id(
+        MENU_ID_ABOUT,
+        "About AI Allowance",
+        true,
         None,
     ))
     .ok();

@@ -54,7 +54,7 @@ Update countdowns from reset timestamps locally. Countdown changes do not requir
 
 A normal Windows tray tooltip has 127 usable UTF-16 code units. Keep the compact text within that limit, including line breaks. Use the context menu for additional windows, last-update times and full local reset dates. Start with a plain tooltip; add a custom popup only if native tooltip behaviour makes the required interaction unreliable.
 
-The context menu should contain Refresh now, provider status/details, Open usage pages, Settings, Start with Windows and Quit. Settings opens a native dialog. Show the menu only on right click; left double click opens the native usage dashboard. The per-user installer enables Start with Windows by default with a selected component the user can clear. Portable startup remains opt-in. The checked menu item changes only the AIAllowance value in the current user's Run key.
+The context menu should contain Refresh now, provider status/details, Open usage pages, Settings, Start with Windows, About and Quit. Settings opens a native dialog. About shows the version, build date and publisher (Aven Solutions AI). Show the menu only on right click; left double click opens the native usage dashboard. The per-user installer enables Start with Windows by default with a selected component the user can clear. Portable startup remains opt-in. The checked menu item changes only the AIAllowance value in the current user's Run key.
 
 Use the user's Windows locale/time zone for absolute reset times. Do not hardcode Melbourne or Sydney. Handle suspend/resume, clock changes, Explorer restarts and application shutdown. Keep a single application instance and suppress an unwanted console window in release builds.
 

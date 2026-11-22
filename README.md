@@ -55,7 +55,8 @@ validated live, using an explicitly experimental interface (see
   data.
 - Context menu: per-window details with exact local reset times and last
   update time, Refresh now, Open usage pages, native Settings dialog,
-  checked Start with Windows toggle, Quit.
+  checked Start with Windows toggle, About (version, build date and
+  publisher), Quit.
 - Settings pages for general preferences, provider configuration and
   per-provider Chrome profiles. Saving applies changes without restarting.
   Every executable, folder and Chrome profile field has a Browse button

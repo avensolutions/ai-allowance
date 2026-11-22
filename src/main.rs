@@ -92,8 +92,8 @@ mod app {
     use crate::refresh::RefreshCoordinator;
     use crate::state::{AppState, FetchError, FetchOutcome, ProviderKind, HOVER_MAX_AGE_SECS};
     use crate::tray::{
-        TrayUi, MENU_ID_AUTOSTART, MENU_ID_OPEN_PREFIX, MENU_ID_QUIT, MENU_ID_REFRESH,
-        MENU_ID_SETTINGS,
+        TrayUi, MENU_ID_ABOUT, MENU_ID_AUTOSTART, MENU_ID_OPEN_PREFIX, MENU_ID_QUIT,
+        MENU_ID_REFRESH, MENU_ID_SETTINGS,
     };
 
     /// Tooltip countdowns update locally on this cadence without any network.
@@ -459,6 +459,11 @@ mod app {
                                 dialogs::show_error(&e);
                             }
                             app.sync_autostart();
+                        }
+                        MENU_ID_ABOUT => {
+                            if let Err(e) = dialogs.about(app.proxy.clone()) {
+                                dialogs::show_error(&e);
+                            }
                         }
                         MENU_ID_QUIT => {
                             *control_flow = ControlFlow::Exit;
