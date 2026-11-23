@@ -189,6 +189,12 @@ impl ProviderSnapshot {
             account_key: None,
         }
     }
+
+    /// True when the retained windows come from an earlier success because
+    /// the latest fetch failed, whatever the failure kind.
+    pub fn is_stale(&self) -> bool {
+        !self.windows.is_empty() && self.status != ProviderStatus::Ready
+    }
 }
 
 /// Successful fetch result produced by a provider adapter.
@@ -426,8 +432,7 @@ pub fn tooltip_lines(
                 continue;
             };
             if let Some(w) = snap.windows.iter().find(|w| &w.id == id) {
-                let stale = matches!(snap.status, ProviderStatus::Stale(_));
-                if let Some(text) = format_window_row(w, now, stale) {
+                if let Some(text) = format_window_row(w, now, snap.is_stale()) {
                     rows.push(TooltipLine {
                         pace: w.pace(now),
                         text,
@@ -703,6 +708,37 @@ mod tests {
             state.snapshot(ProviderKind::Copilot).unwrap().windows.len(),
             1
         );
+    }
+
+    #[test]
+    fn retained_windows_are_stale_after_any_failure() {
+        let now = t("2026-11-16T00:00:00Z");
+        for err in [
+            FetchError::Unsupported("interface changed".into()),
+            FetchError::RateLimited {
+                retry_after_secs: None,
+                message: "slow down".into(),
+            },
+        ] {
+            let mut state = AppState::default();
+            let mut w = QuotaWindow::new("copilot:premium_interactions", "Copilot");
+            w.used_percent = Some(50.0);
+            state.apply_success(
+                ProviderKind::Copilot,
+                FetchOutcome {
+                    account_key: None,
+                    windows: vec![w],
+                },
+                now,
+            );
+            assert!(!state.snapshot(ProviderKind::Copilot).unwrap().is_stale());
+            state.apply_failure(ProviderKind::Copilot, &err);
+            assert!(state.snapshot(ProviderKind::Copilot).unwrap().is_stale());
+            assert_eq!(
+                format_tooltip(&state, &[], now),
+                "Copilot: 50% left (stale)"
+            );
+        }
     }
 
     #[test]

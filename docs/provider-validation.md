@@ -113,6 +113,15 @@ was redeemed. Validation date: 2026-11-16, on Windows 11 x64.
 - Explicitly unlimited chat and completion snapshots are not shown as finite
   allowances. All finite windows remain separate; premium interactions come
   first in the default compact view.
+- Observed 2026-11-23: once the premium allowance is exhausted, its snapshot
+  reports `has_quota: false` with `unlimited: false`, the positive
+  `entitlement`, `percent_remaining: 0`, `credits_used` above the entitlement
+  and negative `quota_remaining`/`remaining`. `has_quota` therefore means
+  "allowance remaining", not "this snapshot has an allowance". A snapshot is
+  skipped only when it is unlimited, or when `has_quota` is false and there is
+  no positive entitlement. Earlier builds skipped the exhausted snapshot,
+  reported "No finite Copilot allowance was reported" and kept showing the
+  last good value.
 - Reset convention: use a positive per-window Unix timestamp when present.
   A zero or absent timestamp falls back to the monthly date at 00:00 UTC.
   This is experimental interpretation, not a verified reset-boundary guarantee.

@@ -57,7 +57,14 @@ pub fn parse_quota(json: &str, account_key: String) -> Result<FetchOutcome, Fetc
         .transpose()?;
     let mut windows = Vec::new();
     for (id, quota) in quota {
-        if quota.unlimited == Some(true) || quota.has_quota == Some(false) {
+        if quota.unlimited == Some(true) {
+            continue;
+        }
+        // Observed 2026-11-23: an exhausted finite snapshot reports
+        // `has_quota: false` alongside its positive entitlement, so the flag
+        // means "allowance remaining", not "snapshot has an allowance". Only
+        // skip it when there is no entitlement to show.
+        if quota.has_quota == Some(false) && !quota.entitlement.is_some_and(|n| n > 0.0) {
             continue;
         }
         let mut w = QuotaWindow::new(
@@ -248,6 +255,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.windows[0].remaining_percent(), None);
+    }
+
+    #[test]
+    fn exhausted_quota_with_has_quota_false_is_shown_as_empty() {
+        let out = parse_quota(
+            include_str!("../../tests/fixtures/copilot_quota_exhausted.json"),
+            "github:123".into(),
+        )
+        .unwrap();
+        assert_eq!(out.windows.len(), 1);
+        let w = &out.windows[0];
+        assert_eq!(w.id, "copilot:premium_interactions");
+        assert_eq!(w.remaining_percent(), Some(0.0));
+        assert_eq!(w.used_units, Some(20009.0));
+        assert_eq!(w.allowance_units, Some(20000.0));
+
+        // Without an entitlement, has_quota false still means no allowance.
+        assert!(parse_quota(
+            r#"{"plan":"free","quota":{"premium_interactions":{"has_quota":false,"unlimited":false,"entitlement":0,"percent_remaining":0}}}"#,
+            "github:123".into(),
+        )
+        .is_err());
     }
 
     #[test]

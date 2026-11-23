@@ -1,0 +1,21 @@
+{
+  "plan": "individual_max",
+  "reset": "2026-12-01",
+  "quota": {
+    "chat": {"has_quota": true, "unlimited": true, "entitlement": 0, "percent_remaining": 100, "quota_reset_at": 0},
+    "completions": {"has_quota": true, "unlimited": true, "entitlement": 0, "percent_remaining": 100, "quota_reset_at": 0},
+    "premium_interactions": {
+      "has_quota": false,
+      "unlimited": false,
+      "credits_used": 20009,
+      "entitlement": 20000,
+      "percent_remaining": 0,
+      "quota_remaining": -9.4,
+      "remaining": -10,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "quota_reset_at": 0,
+      "timestamp_utc": "2026-11-23T00:17:26.564Z"
+    }
+  }
+}

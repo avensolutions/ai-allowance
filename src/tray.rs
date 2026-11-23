@@ -115,7 +115,7 @@ fn build_menu(state: &AppState, autostart: Option<bool>) -> Menu {
             if let Some(r) = w.resets_at {
                 text.push_str(&format!(", resets {}", local_time(r)));
             }
-            if matches!(snap.status, ProviderStatus::Stale(_)) {
+            if snap.is_stale() {
                 text.push_str(" [stale]");
             }
             menu.append(&MenuItem::new(truncate(&text, 90), false, None))

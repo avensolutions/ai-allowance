@@ -1189,6 +1189,9 @@ impl WindowData {
                 if let Some(at) = snap.collected_at {
                     let mut updated =
                         format!("Updated {}", at.with_timezone(&Local).format("%H:%M"));
+                    if snap.is_stale() {
+                        updated.push_str("  |  Stale");
+                    }
                     if refreshing.contains(&kind) {
                         updated.push_str("  |  Refreshing");
                     }
