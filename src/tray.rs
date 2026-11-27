@@ -69,7 +69,7 @@ pub(crate) fn status_text(status: &ProviderStatus) -> Option<String> {
         ProviderStatus::NotConfigured(reason) => format!("not configured: {reason}"),
         ProviderStatus::Loading => "loading".to_string(),
         ProviderStatus::Ready => return None,
-        ProviderStatus::Stale(reason) => format!("stale: {reason}"),
+        ProviderStatus::Stale(reason) => format!("refresh failed: {reason}"),
         ProviderStatus::SignInRequired(reason) => format!("sign-in required: {reason}"),
         ProviderStatus::RateLimited(reason) => format!("rate limited: {reason}"),
         ProviderStatus::Unsupported(reason) => format!("unavailable: {reason}"),
@@ -96,6 +96,7 @@ fn local_time(t: DateTime<Utc>) -> String {
 /// item count varies with the available windows.
 fn build_menu(state: &AppState, autostart: Option<bool>) -> Menu {
     let menu = Menu::new();
+    let now = Utc::now();
 
     for kind in ProviderKind::ALL {
         let Some(snap) = state.snapshot(kind) else {
@@ -115,7 +116,7 @@ fn build_menu(state: &AppState, autostart: Option<bool>) -> Menu {
             if let Some(r) = w.resets_at {
                 text.push_str(&format!(", resets {}", local_time(r)));
             }
-            if snap.is_stale() {
+            if snap.is_stale(now) {
                 text.push_str(" [stale]");
             }
             menu.append(&MenuItem::new(truncate(&text, 90), false, None))

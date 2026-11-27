@@ -49,6 +49,17 @@ was redeemed. Validation date: 2026-11-16, on Windows 11 x64.
 - Update latency: values come from the claude.ai usage endpoint at call time;
   no cache-staleness indicator is exposed. Collection time is recorded
   locally.
+- Observed 2026-11-28 (bundled CLI 2.1.325): the runtime reads
+  `/api/oauth/usage` with a 5 s timeout. When that read fails (timeout,
+  network error, in-band error body, HTTP 429 or 403) the usage method still
+  returns `rate_limits_available: true` but `rate_limits: null`. A 429 or 403
+  is remembered for the rest of that process (Retry-After, else 300 s). The
+  response does not say why, so the helper passes `debugFile` to a temporary
+  file, reads the runtime's `fetchUtilization` lines, and removes the file
+  before exit. A remembered rate limit is reported as `rate_limited` with
+  `retry_after_secs`; any other failed read is retried once after 2 s in the
+  same session. Earlier builds reported "usage response contained no rate
+  limit data" and marked the last good values stale after a single failure.
 - Runtime dependency: Node.js 23.6+ (tested with 24.22.1) plus
   `npm install` in `helpers/claude-usage`. The helper's lifetime is bounded
   (80 s internal watchdog, 90 s Rust-side timeout) and it writes diagnostics
@@ -193,7 +204,9 @@ was redeemed. Validation date: 2026-11-16, on Windows 11 x64.
 
 - Sign-in, rate-limit (with Retry-After when provided), unsupported,
   timeout and generic errors are classified separately.
-- A transient failure keeps the last good snapshot, labelled stale.
+- A transient failure keeps the last good snapshot and shows the failure
+  reason. The values are labelled stale once the last success is 30 minutes
+  old, so one failed refresh of recent values is not reported as stale data.
 - One adapter's failure never erases another adapter's data.
 - Fetches are deduplicated per provider with exponential backoff
   (30 s base, 15 min cap).

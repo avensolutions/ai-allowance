@@ -26,7 +26,14 @@ Output contract consumed by the Rust adapter:
 ```json
 { "ok": true, "data": { "subscription_type": "...", "rate_limits_available": true, "rate_limits": { } } }
 { "ok": false, "error": { "kind": "sign_in_required" | "error", "message": "..." } }
+{ "ok": false, "error": { "kind": "rate_limited", "message": "...", "retry_after_secs": 300 } }
 ```
+
+When the SDK returns no rate limits for a subscription session, its own
+read of the claude.ai usage endpoint failed. The helper finds the reason in
+the runtime's debug log, written to a temporary file that is deleted before
+the helper exits, and retries a failed read once. A rate limit is reported
+with the hold the runtime applies, so the app does not ask again sooner.
 
 The SDK method is explicitly experimental
 (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`) and may change

@@ -38,6 +38,8 @@ struct HelperError {
     kind: Option<String>,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    retry_after_secs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -132,10 +134,15 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
         let err = parsed.error.unwrap_or(HelperError {
             kind: None,
             message: None,
+            retry_after_secs: None,
         });
         let message = err.message.unwrap_or_else(|| "helper failed".to_string());
         return Err(match err.kind.as_deref() {
             Some("sign_in_required") => FetchError::SignInRequired(message),
+            Some("rate_limited") => FetchError::RateLimited {
+                retry_after_secs: err.retry_after_secs,
+                message,
+            },
             _ => classify_error_message(&message),
         });
     }
@@ -148,9 +155,11 @@ pub fn parse_helper_output(json: &str) -> Result<FetchOutcome, FetchError> {
                 .to_string(),
         ));
     }
+    // The SDK reports null rate limits when its read of the claude.ai usage
+    // endpoint failed (timeout, network error or rate limit). Transient.
     let Some(limits) = data.rate_limits else {
         return Err(FetchError::Other(
-            "usage response contained no rate limit data".to_string(),
+            "Claude usage endpoint returned no data".to_string(),
         ));
     };
 
@@ -393,6 +402,32 @@ mod tests {
     fn helper_sign_in_error_maps_to_sign_in_required() {
         let err = parse_helper_output(FIXTURE_SIGNIN).unwrap_err();
         assert!(matches!(err, FetchError::SignInRequired(_)));
+    }
+
+    #[test]
+    fn failed_endpoint_reads_are_transient_and_rate_limits_keep_their_hold() {
+        let err = parse_helper_output(
+            r#"{"ok":false,"error":{"kind":"rate_limited","message":"Claude usage endpoint answered HTTP 429; retry in 300s","retry_after_secs":300}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            FetchError::RateLimited {
+                retry_after_secs: Some(300),
+                message: "Claude usage endpoint answered HTTP 429; retry in 300s".into(),
+            }
+        );
+        let err = parse_helper_output(
+            r#"{"ok":false,"error":{"kind":"error","message":"Claude usage endpoint read failed twice (Failed to load usage data: timeout of 5000ms exceeded)"}}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Other(_)), "{err:?}");
+        // Older helpers pass the null through; it is still a transient failure.
+        let err = parse_helper_output(
+            r#"{"ok":true,"data":{"subscription_type":"max","rate_limits_available":true,"rate_limits":null}}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Other(_)), "{err:?}");
     }
 
     #[test]

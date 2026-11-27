@@ -13,6 +13,11 @@ pub const TOOLTIP_MAX_UTF16: usize = 127;
 /// Data older than this is refreshed when the user hovers the tray icon.
 pub const HOVER_MAX_AGE_SECS: i64 = 60;
 
+/// Retained values are labelled stale once the last successful read is this
+/// old. A failed refresh of more recent values is reported as a refresh
+/// failure, not as stale data.
+pub const STALE_AFTER_SECS: i64 = 30 * 60;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProviderKind {
     Claude,
@@ -190,10 +195,14 @@ impl ProviderSnapshot {
         }
     }
 
-    /// True when the retained windows come from an earlier success because
-    /// the latest fetch failed, whatever the failure kind.
-    pub fn is_stale(&self) -> bool {
-        !self.windows.is_empty() && self.status != ProviderStatus::Ready
+    /// True when the latest fetch failed, whatever the failure kind, and the
+    /// retained windows from the last success are [`STALE_AFTER_SECS`] old.
+    pub fn is_stale(&self, now: DateTime<Utc>) -> bool {
+        !self.windows.is_empty()
+            && self.status != ProviderStatus::Ready
+            && self
+                .collected_at
+                .is_none_or(|at| (now - at).num_seconds() >= STALE_AFTER_SECS)
     }
 }
 
@@ -432,7 +441,7 @@ pub fn tooltip_lines(
                 continue;
             };
             if let Some(w) = snap.windows.iter().find(|w| &w.id == id) {
-                if let Some(text) = format_window_row(w, now, snap.is_stale()) {
+                if let Some(text) = format_window_row(w, now, snap.is_stale(now)) {
                     rows.push(TooltipLine {
                         pace: w.pace(now),
                         text,
@@ -711,9 +720,12 @@ mod tests {
     }
 
     #[test]
-    fn retained_windows_are_stale_after_any_failure() {
-        let now = t("2026-11-16T00:00:00Z");
+    fn retained_windows_turn_stale_after_any_failure_once_old_enough() {
+        let collected = t("2026-11-16T00:00:00Z");
+        let recent = collected + chrono::Duration::seconds(STALE_AFTER_SECS - 1);
+        let old = collected + chrono::Duration::seconds(STALE_AFTER_SECS);
         for err in [
+            FetchError::Other("Claude usage endpoint returned no data".into()),
             FetchError::Unsupported("interface changed".into()),
             FetchError::RateLimited {
                 retry_after_secs: None,
@@ -729,13 +741,17 @@ mod tests {
                     account_key: None,
                     windows: vec![w],
                 },
-                now,
+                collected,
             );
-            assert!(!state.snapshot(ProviderKind::Copilot).unwrap().is_stale());
+            assert!(!state.snapshot(ProviderKind::Copilot).unwrap().is_stale(old));
             state.apply_failure(ProviderKind::Copilot, &err);
-            assert!(state.snapshot(ProviderKind::Copilot).unwrap().is_stale());
+            let snap = state.snapshot(ProviderKind::Copilot).unwrap();
+            // One failed refresh of recent values does not make them stale.
+            assert!(!snap.is_stale(recent), "{err:?}");
+            assert_eq!(format_tooltip(&state, &[], recent), "Copilot: 50% left");
+            assert!(snap.is_stale(old), "{err:?}");
             assert_eq!(
-                format_tooltip(&state, &[], now),
+                format_tooltip(&state, &[], old),
                 "Copilot: 50% left (stale)"
             );
         }

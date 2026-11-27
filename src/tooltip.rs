@@ -125,14 +125,7 @@ impl TipData {
         SetBkMode(dc, TRANSPARENT as i32);
         for (index, line) in self.lines.iter().enumerate() {
             let (cx, cy) = self.dot_centre(line_height, index);
-            draw_dot(
-                dc,
-                cx,
-                cy,
-                self.dot(),
-                pace_color(line.pace),
-                line.pace.is_some(),
-            );
+            draw_pace_dot(dc, cx, cy, self.dot(), line.pace, BACKGROUND);
             let mut text: Vec<u16> = line.text.encode_utf16().collect();
             let top = self.px(6) + line_height * index as i32;
             let mut r = RECT {
@@ -161,13 +154,42 @@ impl Drop for TipData {
     }
 }
 
+/// Draw the traffic light for `pace`: a filled circle, or a hollow grey one
+/// when pace is unknown. `background` must match the surface behind it.
+pub(crate) unsafe fn draw_pace_dot(
+    dc: HDC,
+    cx: i32,
+    cy: i32,
+    size: i32,
+    pace: Option<Pace>,
+    background: COLORREF,
+) {
+    draw_dot(
+        dc,
+        cx,
+        cy,
+        size,
+        pace_color(pace),
+        pace.is_some(),
+        background,
+    );
+}
+
 /// Draw an anti-aliased circle by rendering it larger and halftoning down.
-unsafe fn draw_dot(dc: HDC, cx: i32, cy: i32, size: i32, color: COLORREF, filled: bool) {
+unsafe fn draw_dot(
+    dc: HDC,
+    cx: i32,
+    cy: i32,
+    size: i32,
+    color: COLORREF,
+    filled: bool,
+    background: COLORREF,
+) {
     let big = size * SS;
     let mem = CreateCompatibleDC(dc);
     let bitmap = CreateCompatibleBitmap(dc, big, big);
     let old_bitmap = SelectObject(mem, bitmap);
-    let background = CreateSolidBrush(BACKGROUND);
+    let background = CreateSolidBrush(background);
     FillRect(
         mem,
         &RECT {
