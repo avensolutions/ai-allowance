@@ -128,7 +128,7 @@ Quota data can lag. Record collection time and the provider data timestamp separ
 
 Keep raw provider values separate from normalized display values. Each window needs a stable provider/account/window identity, label, optional used percentage or units, optional allowance, optional UTC reset time, collection time, and freshness/source information.
 
-Represent not configured, loading, ready, stale, sign-in required, rate limited, unsupported and error explicitly. Retain the last good values on transient failure and label them stale. Clear cached data when the account changes.
+Represent not configured, loading, ready, stale, sign-in required, rate limited, unsupported and error explicitly. Retain the last good values on transient failure, show the failure reason, and label them stale once they are more than 30 minutes old. Clear cached data when the account changes.
 
 Convert percentages only when their units are established. Compute remaining percentage from a valid quota denominator, bound the displayed value to 0 through 100, and retain overage separately. Missing, malformed or unexpected values must never become 0% used, 100% left or "unlimited".
 

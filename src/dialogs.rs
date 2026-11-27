@@ -16,7 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::UserEvent;
 use crate::config::{self, Config};
-use crate::state::{format_countdown, format_window_value, AppState, ProviderKind};
+use crate::state::{format_countdown, format_window_value, AppState, Pace, ProviderKind};
+use crate::tooltip::draw_pace_dot;
 
 const CLASS: &str = "AIAllowance.Dialog";
 const SAVE: usize = 1;
@@ -66,6 +67,12 @@ const TRACK: COLORREF = rgb(228, 239, 251);
 const INPUT_BORDER: COLORREF = rgb(214, 214, 210);
 const INPUT_FOCUS: COLORREF = rgb(54, 125, 222);
 const USAGE_BACKGROUND: COLORREF = rgb(248, 249, 251);
+const CARD: COLORREF = rgb(255, 255, 255);
+/// Usage window traffic lights, the same size as the hover popup's.
+const DOT: i32 = 10;
+const DOT_GAP: i32 = 8;
+/// Window labels end here so a traffic light never reaches the value column.
+const LABEL_MAX_WIDTH: i32 = 340;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Browse {
@@ -134,6 +141,14 @@ struct UsageBar {
     left: f64,
 }
 
+/// A usage window's traffic light, drawn after its label. `x` is the dot's
+/// left edge and `y` the label row's top, in logical pixels.
+struct PaceDot {
+    x: i32,
+    y: i32,
+    pace: Option<Pace>,
+}
+
 /// A selectable tray tooltip row. `default` marks rows the automatic choice shows.
 struct TooltipRow {
     id: String,
@@ -164,6 +179,7 @@ struct WindowData {
     app_icon: HICON,
     cards: Vec<ProviderCard>,
     bars: Vec<UsageBar>,
+    dots: Vec<PaceDot>,
     fields: Vec<FieldBox>,
     tooltip_rows: Vec<TooltipRow>,
     scale: f64,
@@ -468,6 +484,7 @@ fn create_window(
             app_icon: std::ptr::null_mut(),
             cards: Vec::new(),
             bars: Vec::new(),
+            dots: Vec::new(),
             fields: Vec::new(),
             tooltip_rows: Vec::new(),
             scale,
@@ -521,6 +538,28 @@ unsafe fn data(hwnd: HWND) -> &'static mut WindowData {
 impl WindowData {
     fn px(&self, n: i32) -> i32 {
         (n as f64 * self.scale).round() as i32
+    }
+
+    /// Width of `text` drawn in `font`, in logical pixels, rounded up.
+    fn text_width(&self, font: HFONT, text: &str) -> i32 {
+        let text: Vec<u16> = text.encode_utf16().collect();
+        let mut size = SIZE::default();
+        unsafe {
+            let dc = GetDC(std::ptr::null_mut());
+            let old = SelectObject(dc, font);
+            GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
+            SelectObject(dc, old);
+            ReleaseDC(std::ptr::null_mut(), dc);
+        }
+        (size.cx as f64 / self.scale).ceil() as i32
+    }
+
+    /// Physical centre of a traffic light, level with its label's text.
+    fn dot_centre(&self, dot: &PaceDot) -> (i32, i32) {
+        (
+            self.px(dot.x) + self.px(DOT) / 2,
+            self.px(dot.y) + self.line_height / 2 - self.scroll,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1095,6 +1134,7 @@ impl WindowData {
         }
         self.cards.clear();
         self.bars.clear();
+        self.dots.clear();
         let now = Utc::now();
         let mut y = 18;
         for (kind, title) in [
@@ -1131,7 +1171,16 @@ impl WindowData {
                     y += 44;
                 }
                 for w in &snap.windows {
-                    self.usage_text(hwnd, &w.label, 34, y, 360, 22, self.font, false)?;
+                    // The label is only as wide as its text: the dialog clips
+                    // its own painting to exclude child controls.
+                    let label_width =
+                        (self.text_width(self.font, &w.label) + 2).min(LABEL_MAX_WIDTH);
+                    self.usage_text(hwnd, &w.label, 34, y, label_width, 22, self.font, false)?;
+                    self.dots.push(PaceDot {
+                        x: 34 + label_width + DOT_GAP,
+                        y,
+                        pace: w.pace(now),
+                    });
                     let value = format_window_value(w).unwrap_or_else(|| "Unavailable".into());
                     let h = self.usage_text(hwnd, &value, 404, y, 150, 22, self.font, true)?;
                     unsafe {
@@ -1189,7 +1238,7 @@ impl WindowData {
                 if let Some(at) = snap.collected_at {
                     let mut updated =
                         format!("Updated {}", at.with_timezone(&Local).format("%H:%M"));
-                    if snap.is_stale() {
+                    if snap.is_stale(now) {
                         updated.push_str("  |  Stale");
                     }
                     if refreshing.contains(&kind) {
@@ -1356,7 +1405,7 @@ impl WindowData {
                 self.px(558),
                 self.px(card.height),
                 self.px(12),
-                rgb(255, 255, 255),
+                CARD,
                 rgb(226, 228, 232),
             );
             let index = match card.kind {
@@ -1393,6 +1442,10 @@ impl WindowData {
             if left > 0 {
                 rounded_rect(dc, self.px(34), y, left, self.px(4), self.px(4), BAR, BAR);
             }
+        }
+        for dot in &self.dots {
+            let (cx, cy) = self.dot_centre(dot);
+            draw_pace_dot(dc, cx, cy, self.px(DOT), dot.pace, CARD);
         }
     }
 
@@ -1767,12 +1820,22 @@ pub fn initialize() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{FetchOutcome, QuotaWindow};
+    use crate::state::{FetchOutcome, QuotaWindow, WEEK_SECS};
+    use crate::tooltip::pace_color;
     use std::time::{Duration, Instant};
     use tao::event::Event;
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::platform::run_return::EventLoopExtRunReturn;
     use tao::platform::windows::EventLoopBuilderExtWindows;
+
+    /// Colours within anti-aliasing distance of each other.
+    fn close(a: COLORREF, b: COLORREF) -> bool {
+        (0..3).all(|shift| {
+            let x = ((a >> (shift * 8)) & 0xff) as i32;
+            let y = ((b >> (shift * 8)) & 0xff) as i32;
+            (x - y).abs() <= 24
+        })
+    }
 
     #[test]
     fn native_settings_and_usage_controls_preserve_values_and_missing_data() {
@@ -1845,10 +1908,16 @@ mod tests {
         }
 
         let mut state = AppState::default();
+        // Halfway through a week: 25% used is on pace, 60% used is over it.
+        let half_week = Utc::now() + chrono::Duration::seconds(WEEK_SECS / 2);
         let mut overall = QuotaWindow::new("claude:overall", "Claude");
         overall.used_percent = Some(25.0);
+        overall.window_secs = Some(WEEK_SECS);
+        overall.resets_at = Some(half_week);
         let mut fable = QuotaWindow::new("claude:model:fable", "Claude Fable");
         fable.used_percent = Some(60.0);
+        fable.window_secs = Some(WEEK_SECS);
+        fable.resets_at = Some(half_week);
         state.apply_success(
             ProviderKind::Claude,
             FetchOutcome {
@@ -1901,6 +1970,23 @@ mod tests {
                 assert!(labels.iter().any(|label| label == title), "missing {title}");
             }
             assert!(labels.iter().any(|label| label == "Allowance unavailable"));
+            let d = data(usage);
+            let paces: Vec<_> = d.dots.iter().map(|dot| dot.pace).collect();
+            assert_eq!(paces, [Some(Pace::Green), Some(Pace::Red), None]);
+            // Each light sits right after its own label, clear of the label
+            // control (which would hide it) and of the value column.
+            for (dot, label) in d.dots.iter().zip(["Claude", "Claude Fable", "Copilot"]) {
+                let control = d
+                    .controls
+                    .iter()
+                    .find(|c| c.x == 34 && c.y == dot.y && window_text(c.hwnd) == label)
+                    .unwrap_or_else(|| panic!("no label control for {label}"));
+                let (cx, _) = d.dot_centre(dot);
+                let radius = d.px(DOT) / 2;
+                assert!(cx - radius > d.px(control.x + control.width), "{label}");
+                assert!(cx - radius - d.px(control.x + control.width) <= d.px(DOT_GAP) + 1);
+                assert!(cx + radius < d.px(404), "{label} reaches the value column");
+            }
             let screen = GetDC(usage);
             let dc = CreateCompatibleDC(screen);
             let bitmap = CreateCompatibleBitmap(screen, 800, 800);
@@ -1922,6 +2008,20 @@ mod tests {
                 assert_eq!(GetPixel(dc, 0, 0), rgb(248, 249, 251));
                 let d = data(usage);
                 assert_eq!(GetPixel(dc, d.px(40), d.px(d.bars[0].y + 2)), BAR);
+                for dot in &d.dots {
+                    let (x, y) = d.dot_centre(dot);
+                    let expected = if dot.pace.is_some() {
+                        pace_color(dot.pace)
+                    } else {
+                        CARD // unknown pace is a hollow ring
+                    };
+                    let pixel = GetPixel(dc, x, y);
+                    assert!(
+                        close(pixel, expected),
+                        "{:?}: {pixel:06x} != {expected:06x}",
+                        dot.pace
+                    );
+                }
                 let brush = SendMessageW(
                     usage,
                     WM_CTLCOLORSTATIC,

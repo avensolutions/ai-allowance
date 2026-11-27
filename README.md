@@ -46,13 +46,15 @@ validated live, using an explicitly experimental interface (see
   the first 10% of a window, the projection uses 10% as its minimum elapsed
   time so a small burst just after reset does not trigger a warning.
   A hollow grey circle means pace is unknown or the reset is being checked.
+  The usage window shows the same traffic light after each window's label.
 - Cached values show immediately; hovering refreshes providers whose data is
   older than 60 seconds, concurrently and with one request in flight per
   provider. Countdown text updates locally without network requests.
-- Explicit per-provider states: loading, ready, stale (last good values are
-  kept when a refresh fails), sign-in required, rate limited, unavailable,
-  error and not configured. One provider's failure never hides another's
-  data.
+- Explicit per-provider states: loading, ready, stale, sign-in required,
+  rate limited, unavailable, error and not configured. When a refresh fails,
+  the last good values are kept and the usage window and menu show the
+  reason. The values are marked stale once they are more than 30 minutes
+  old. One provider's failure never hides another's data.
 - Context menu: per-window details with exact local reset times and last
   update time, Refresh now, Open usage pages, native Settings dialog,
   checked Start with Windows toggle, About (version, build date and
@@ -305,7 +307,9 @@ Chrome must already have the desired accounts signed into those profiles.
 - The Claude usage API is explicitly experimental; a future SDK release may
   break it. The helper is pinned to `@anthropic-ai/claude-agent-sdk 0.3.325`.
 - Claude refreshes take several seconds because the helper spawns the SDK
-  runtime each time.
+  runtime each time. The runtime gives its claude.ai usage request 5
+  seconds; the helper retries a failed read once and reports a rate limit
+  with the hold the runtime applies.
 - Copilot's internal quota endpoint is not a public compatibility contract.
   It can change or become unavailable. Reset dates are interpreted as UTC;
   zero per-bucket reset timestamps use the reported monthly date.
